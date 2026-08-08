@@ -1,0 +1,194 @@
+"""Single source of every path default and tunable threshold.
+
+Resolution order, highest first:
+  1. CLI flags (each subcommand exposes the ones it honors)
+  2. Environment variables (MEMORY_DREAM_*, plus the two CLAUDE_MEMORY_* names
+     kept for compatibility with pre-extraction installs)
+  3. Optional JSON config file at <claude-config-dir>/memory-dream.json
+  4. The defaults below
+
+Modules reference thresholds as ``config.NAME`` at use time (never
+``from config import NAME``), so file-config overrides and test patches
+propagate. Threshold provenance and mis-tuning symptoms: docs/TUNING.md —
+most values were calibrated on one ~500-note English corpus and are
+defaults, not truths.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from pathlib import Path
+
+# --- Triage: what flags a note for consolidation ---------------------------
+TRIAGE_BODY_BYTES = 6000  # body size that flags a note as oversized
+TRIAGE_BODY_BYTES_LARGE = 10000  # stronger ranking boost past this
+TRIAGE_AGE_DAYS = 90  # mtime age that boosts ranking (never flags alone)
+TRIAGE_AGE_DAYS_OLD = 180  # stronger age boost
+TRIAGE_MAX_CLUSTERS = 12  # per-pass cluster cap (overflow -> deferred)
+TRIAGE_MAX_NOTES_PER_CLUSTER = 8
+TRIAGE_DESC_MIN_WORDS = 5  # descriptions shorter than this are flagged vague
+SUPPRESS_APPLIED_DAYS = 14  # don't re-flag notes a recent pass just touched
+
+# --- Index budget (the loader-visible MEMORY.md surface) -------------------
+# Measured against Claude Code v2.1.211's per-project load accounting; the cap
+# is not a documented API and can drift with the CLI. `doctor` restates this.
+INDEX_LOAD_MAX_LINES = 200
+INDEX_LOAD_MAX_BYTES = 25 * 1024
+INDEX_BUDGET_FRACTION = 0.7  # repository-hygiene warning threshold
+# Repo-hygiene audit ceilings (distinct from the loader cap above).
+AUDIT_MAX_INDEX_BYTES = 32768
+AUDIT_MAX_INDEX_LINES = 400
+AUDIT_STALE_DAYS = 90
+
+# --- Drafting / build validation -------------------------------------------
+MERGE_JACCARD = 0.5  # near-duplicate detection for merge candidates
+SIBLING_DESC_JACCARD = 0.6  # build rejects split siblings blurrier than this
+MAX_SPLIT_EXTRACTS = 6
+ENTRY_DATE_SCAN_BYTES = 4000  # archive candidate date scan: note-body head
+
+# --- Decay (notes carrying confidence/last_validated frontmatter) ----------
+DECAY_HALF_LIFE_DAYS = 90.0
+DECAY_FLAG_THRESHOLD = 0.3  # effective confidence below this flags the note
+NEW_EXTRACT_CONFIDENCE = "0.8"  # stamped into new extracts at build
+NEW_EXTRACT_MATURITY = "candidate"
+
+# --- Apply ------------------------------------------------------------------
+ACTIVE_WINDOW_SECONDS = 900  # sibling-session activity warning window
+PATCH_SET_RETENTION_DAYS = 90  # advisory; pruning is operator-owned
+
+# --- Sensitive-content redaction --------------------------------------------
+# Extended (never replaced) by the "sensitive_patterns_extra" config-file key:
+# a list of regex strings matched against note filenames.
+SENSITIVE_PATTERNS_EXTRA: list[str] = []
+
+# What a mirror-stale apply refusal tells the operator to run. Personal
+# harnesses set this to their own sync command via the config file.
+MIRROR_PUSH_HINT = "sync your mirror, then retry"
+
+_ENV_PREFIX = "MEMORY_DREAM_"
+_FILE_CONFIG_LOADED = False
+
+# Threshold names the JSON config file / env may override.
+_OVERRIDABLE = {
+    name
+    for name, value in list(globals().items())
+    if name.isupper() and isinstance(value, (int, float, str, list))
+}
+
+
+def claude_config_dir() -> Path:
+    """Base directory for Claude Code state (honors CLAUDE_CONFIG_DIR)."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
+
+
+def config_file_path() -> Path:
+    return claude_config_dir() / "memory-dream.json"
+
+
+def default_live_root() -> Path:
+    return Path(
+        os.environ.get(
+            _ENV_PREFIX + "LIVE_ROOT",
+            os.environ.get("CLAUDE_MEMORY_LIVE_ROOT", str(claude_config_dir() / "projects")),
+        )
+    ).expanduser()
+
+
+def default_mirror_root() -> Path | None:
+    """A git-tracked mirror of live memory. None (the default) = snapshot mode.
+
+    There is deliberately no path-relative fallback: the pre-extraction
+    default derived a mirror from the script's own location and silently
+    repointed when run from a copied checkout.
+    """
+    raw = os.environ.get(_ENV_PREFIX + "MIRROR_ROOT", os.environ.get("CLAUDE_MEMORY_MIRROR_ROOT"))
+    if raw:
+        return Path(raw).expanduser()
+    file_cfg = _file_config()
+    if file_cfg.get("mirror_root"):
+        return Path(str(file_cfg["mirror_root"])).expanduser()
+    return None
+
+
+def pass_root() -> Path:
+    return Path(
+        os.environ.get(_ENV_PREFIX + "PASS_ROOT", str(claude_config_dir() / "logs" / "memory-dream" / "passes"))
+    ).expanduser()
+
+
+def eval_home() -> Path:
+    return Path(
+        os.environ.get(_ENV_PREFIX + "EVAL_HOME", str(claude_config_dir() / "logs" / "memory-dream" / "eval"))
+    ).expanduser()
+
+
+def scratch_dir() -> Path:
+    """Session scratch for plan/drafts/selection JSON. Never memory bodies."""
+    env = os.environ.get(_ENV_PREFIX + "SCRATCH")
+    if env:
+        p = Path(env).expanduser()
+    elif os.environ.get("CLAUDE_JOB_DIR"):
+        p = Path(os.environ["CLAUDE_JOB_DIR"]) / "tmp"
+    else:
+        p = Path(tempfile.gettempdir()) / f"memory-dream-{os.getpid()}"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _file_config() -> dict:
+    path = config_file_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"unreadable config file {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"config file {path} must hold one JSON object")
+    return data
+
+
+def load_file_config() -> None:
+    """Apply the JSON config file's threshold overrides once per process."""
+    global _FILE_CONFIG_LOADED
+    if _FILE_CONFIG_LOADED:
+        return
+    _FILE_CONFIG_LOADED = True
+    data = _file_config()
+    unknown = []
+    for key, value in data.items():
+        if key in ("mirror_root", "mirror_push_hint"):
+            if key == "mirror_push_hint":
+                globals()["MIRROR_PUSH_HINT"] = str(value)
+            continue
+        name = key.upper()
+        if name in _OVERRIDABLE:
+            current = globals()[name]
+            try:
+                globals()[name] = type(current)(value) if not isinstance(current, list) else list(value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(f"config key {key}: expected {type(current).__name__}: {exc}") from exc
+        else:
+            unknown.append(key)
+    if unknown:
+        raise SystemExit(
+            f"unknown config key(s) in {config_file_path()}: {', '.join(sorted(unknown))} "
+            f"(valid: mirror_root, mirror_push_hint, {', '.join(sorted(k.lower() for k in _OVERRIDABLE))})"
+        )
+
+
+def add_root_args(parser) -> None:
+    """The two shared root flags every subcommand honors."""
+    parser.add_argument(
+        "--live-root",
+        default=str(default_live_root()),
+        help="root of per-project live memory (default: <claude-config-dir>/projects)",
+    )
+    mirror_default = default_mirror_root()
+    parser.add_argument(
+        "--mirror-root",
+        default=str(mirror_default) if mirror_default else None,
+        help="git-tracked mirror of live memory; omitted = snapshot mode (no mirror gates)",
+    )

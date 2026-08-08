@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memory-dream"
+version = "0.1.0"
+description = "Operator-gated consolidation and recall evaluation for Claude Code auto-memory: triage rot deterministically, draft with a zero-tool subagent, approve item by item, apply through a gate stack that refuses rather than guesses."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "StartupBros / House of Vibe", email = "hello@houseofvibe.ai" }]
+keywords = ["claude-code", "memory", "consolidation", "agents", "house-of-vibe"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Environment :: Console",
+]
+# Zero runtime dependencies is a contract, enforced by scripts/check_stdlib_only.py.
+dependencies = []
+
+[project.urls]
+Homepage = "https://houseofvibe.ai"
+Repository = "https://github.com/StartupBros-com/memory-dream"
+
+[project.scripts]
+memory-dream = "memory_dream.cli:main"
+
+[tool.setuptools]
+packages = ["memory_dream"]
