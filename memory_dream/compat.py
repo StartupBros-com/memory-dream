@@ -46,7 +46,7 @@ class FileLock:
 
     def __enter__(self) -> "FileLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(self.path, "a+")
+        fh = open(self.path, "a+", encoding="utf-8")
         try:
             _lock_exclusive_nonblocking(fh)
         except OSError as exc:

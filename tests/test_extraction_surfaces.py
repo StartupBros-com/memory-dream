@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -96,12 +96,10 @@ class SnapshotBackupRestoreRoundTripTests(unittest.TestCase):
         live_root = root / "live"
         memory_dir = live_root / "proj" / "memory"
         memory_dir.mkdir(parents=True)
-        (memory_dir / "MEMORY.md").write_text(
-            "- [old](old.md): Fixture note describing old in detail\n"
-            "- [cold](cold.md): Fixture note describing cold in detail\n"
-        )
-        (memory_dir / "old.md").write_text(note("old", body="Topic one. Topic two."))
-        (memory_dir / "cold.md").write_text(note("cold", body="Cold truth, superseded."))
+        (memory_dir / "MEMORY.md").write_text("- [old](old.md): Fixture note describing old in detail\n"
+        "- [cold](cold.md): Fixture note describing cold in detail\n", encoding="utf-8", newline="\n")
+        (memory_dir / "old.md").write_text(note("old", body="Topic one. Topic two."), encoding="utf-8", newline="\n")
+        (memory_dir / "cold.md").write_text(note("cold", body="Cold truth, superseded."), encoding="utf-8", newline="\n")
 
         proposals = [
             {
@@ -139,10 +137,10 @@ class SnapshotBackupRestoreRoundTripTests(unittest.TestCase):
             "created_at_line": 0,
             "proposals": proposals,
         }
-        (patch_set / "manifest.json").write_text(json.dumps(manifest))
+        (patch_set / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
         selection = {"approved": ["split1", "close1"], "patch_set_id": manifest_id}
         selection_path = root / "selection.json"
-        selection_path.write_text(json.dumps(selection))
+        selection_path.write_text(json.dumps(selection), encoding="utf-8", newline="\n")
         return live_root, memory_dir, patch_set, selection_path
 
     def test_apply_snapshot_backup_then_restore_round_trip(self):
@@ -168,13 +166,13 @@ class SnapshotBackupRestoreRoundTripTests(unittest.TestCase):
             # Live state changed: cold.md gone, extract.md created, old.md rewritten.
             self.assertFalse((memory_dir / "cold.md").exists())
             self.assertTrue((memory_dir / "extract.md").exists())
-            self.assertIn("rewritten", (memory_dir / "old.md").read_text())
+            self.assertIn("rewritten", (memory_dir / "old.md").read_text(encoding="utf-8"))
 
             # backup/ holds pre-images + a manifest recording every touched path.
             backup_root = patch_set / "backup"
             backup_manifest_path = backup_root / "backup-manifest.json"
             self.assertTrue(backup_manifest_path.is_file())
-            backup_manifest = json.loads(backup_manifest_path.read_text())
+            backup_manifest = json.loads(backup_manifest_path.read_text(encoding="utf-8"))
             entries = {(e["project"], e["path"]): e["sha256"] for e in backup_manifest["entries"]}
             self.assertEqual(entries[("proj", "old.md")], hashlib.sha256(pre_old).hexdigest())
             self.assertEqual(entries[("proj", "cold.md")], hashlib.sha256(pre_cold).hexdigest())
@@ -212,8 +210,8 @@ class ConsentTokenModeTests(unittest.TestCase):
         live_root = root / "live"
         memory_dir = live_root / "proj" / "memory"
         memory_dir.mkdir(parents=True)
-        (memory_dir / "MEMORY.md").write_text("- [old](old.md): Fixture note describing old in detail\n")
-        (memory_dir / "old.md").write_text(note("old"))
+        (memory_dir / "MEMORY.md").write_text("- [old](old.md): Fixture note describing old in detail\n", encoding="utf-8", newline="\n")
+        (memory_dir / "old.md").write_text(note("old"), encoding="utf-8", newline="\n")
         proposals = [
             {
                 "id": "p1",
@@ -236,7 +234,7 @@ class ConsentTokenModeTests(unittest.TestCase):
             "created_at_line": 0,
             "proposals": proposals,
         }
-        (patch_set / "manifest.json").write_text(json.dumps(manifest))
+        (patch_set / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
         return live_root, memory_dir, patch_set, manifest_id
 
     def _selection(self, root: Path, manifest_id: str, patch_set_id=None) -> Path:
@@ -245,7 +243,7 @@ class ConsentTokenModeTests(unittest.TestCase):
             "patch_set_id": patch_set_id if patch_set_id is not None else manifest_id,
         }
         path = root / "selection.json"
-        path.write_text(json.dumps(selection))
+        path.write_text(json.dumps(selection), encoding="utf-8", newline="\n")
         return path
 
     def test_token_without_acknowledge_refuses(self):
@@ -349,7 +347,7 @@ class TranscriptSchemaTests(unittest.TestCase):
                 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "preview"}]}},
                 {"type": "user", "message": {"role": "user", "content": "approve all xyz"}},
             ]
-            (tdir / "sess.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+            (tdir / "sess.jsonl").write_text("\n".join(json.dumps(line) for line in lines), encoding="utf-8", newline="\n")
             probe = transcript.schema_probe(tdir)
             self.assertTrue(probe.startswith("recognized"), probe)
             self.assertIn("2 user turn(s)", probe)
@@ -361,7 +359,7 @@ class TranscriptSchemaTests(unittest.TestCase):
                 {"type": "user", "message": {"role": "user", "content": "ok"}},
                 {"type": "user", "message": {"role": "nope"}},  # unrecognized shape
             ]
-            (tdir / "sess.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+            (tdir / "sess.jsonl").write_text("\n".join(json.dumps(line) for line in lines), encoding="utf-8", newline="\n")
             probe = transcript.schema_probe(tdir)
             self.assertTrue(probe.startswith("UNRECOGNIZED"), probe)
 
@@ -405,7 +403,7 @@ class ConfigResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             claude_dir = Path(temp) / "claude-config"
             claude_dir.mkdir()
-            (claude_dir / "memory-dream.json").write_text(json.dumps({"triage_body_bytes": 1234}))
+            (claude_dir / "memory-dream.json").write_text(json.dumps({"triage_body_bytes": 1234}), encoding="utf-8", newline="\n")
             os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
             config._FILE_CONFIG_LOADED = False
             config.load_file_config()
@@ -415,7 +413,7 @@ class ConfigResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             claude_dir = Path(temp) / "claude-config"
             claude_dir.mkdir()
-            (claude_dir / "memory-dream.json").write_text(json.dumps({"totally_bogus_key": 1}))
+            (claude_dir / "memory-dream.json").write_text(json.dumps({"totally_bogus_key": 1}), encoding="utf-8", newline="\n")
             os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
             config._FILE_CONFIG_LOADED = False
             with self.assertRaises(SystemExit) as cm:
@@ -509,6 +507,18 @@ def _doctor_line(stdout: str, needle: str) -> str:
     raise AssertionError(f"no doctor line contains {needle!r} in:\n{stdout}")
 
 
+class TranscriptSlugTests(unittest.TestCase):
+    def test_cwd_slug_never_escapes_projects_dir(self):
+        # Windows drive colons and backslashes must be replaced too: the slug
+        # is always one relative component, so ``projects / slug`` can never
+        # resolve outside the config directory (the v0.1.0 Windows bug).
+        self.assertEqual(
+            transcript.cwd_slug(PureWindowsPath("C:\\Users\\x\\proj.app")),
+            "C--Users-x-proj-app",
+        )
+        self.assertEqual(transcript.cwd_slug(Path("/home/x/proj.app")), "-home-x-proj-app")
+
+
 class DoctorTests(unittest.TestCase):
     def test_healthy_layout_exits_zero(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -517,12 +527,9 @@ class DoctorTests(unittest.TestCase):
             (projects / "some-project" / "memory").mkdir(parents=True)
             # transcripts_dir_for slugs the cwd; doctor's subcommand runs with
             # cwd=REPO_ROOT per the house rule for subprocess CLI calls.
-            slug = "".join("-" if ch in "/." else ch for ch in str(REPO_ROOT))
-            transcripts_dir = projects / slug
+            transcripts_dir = projects / transcript.cwd_slug(REPO_ROOT)
             transcripts_dir.mkdir(parents=True)
-            (transcripts_dir / "session.jsonl").write_text(
-                json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}}) + "\n"
-            )
+            (transcripts_dir / "session.jsonl").write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}}) + "\n", encoding="utf-8", newline="\n")
             env = subprocess_env(claude_dir)
             result = run_cli("doctor", cwd=REPO_ROOT, env=env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

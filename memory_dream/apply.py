@@ -260,7 +260,9 @@ def snapshot_patch_set(
             json.dumps(
                 {"schema_version": APPLY_SCHEMA_VERSION, "entries": manifest_entries}, indent=2, sort_keys=True
             )
-            + "\n"
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
         )
     except OSError as error:
         return f"snapshot failed, refusing before any live write: {error}"
@@ -787,7 +789,7 @@ def _run_apply_locked(
         "deleted": [{"project": project, "path": rel} for project, rel in deleted],
         "projects": results,
     }
-    (patch_set / "apply-manifest.json").write_text(json.dumps(apply_manifest, indent=2, sort_keys=True) + "\n")
+    (patch_set / "apply-manifest.json").write_text(json.dumps(apply_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     # Machine-parseable completion line: the caller greps this, then runs any
     # mirror record step and prunes the deleted notes from the mirror.
     print(

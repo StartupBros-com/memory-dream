@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.1.1 — 2026-08-08
+
+Windows correctness release; no behavior change on POSIX.
+
+- **Fix**: the transcript slug derivation (`transcript.cwd_slug`) now replaces
+  Windows drive colons and backslashes, so the derived transcripts directory
+  always stays inside `<claude-config-dir>/projects/` on native Windows.
+  Previously `doctor` and the consent trace probed a wrong (repo-local) path.
+- **Fix**: all file I/O — product and test fixtures — now uses explicit UTF-8
+  with LF newlines, matching what Claude Code itself writes. Previously
+  Windows wrote locale-encoded (e.g. cp1252) CRLF files that later strict
+  UTF-8 reads rejected with `UnicodeDecodeError`.
+- **Tests**: the lock-contention test holds the lock via `compat.FileLock`
+  (flock on POSIX, msvcrt on Windows) instead of raw `fcntl`, so the whole
+  suite imports and runs on Windows; POSIX-only 0700 mode assertions are
+  skipped on Windows per `compat.restrict_permissions`'s documented no-op.
+
 ## v0.1.0 — 2026-08-08
 
 Initial public release.

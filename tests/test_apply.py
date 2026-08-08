@@ -7,7 +7,6 @@ developer's real ~/.claude/memory-dream.json) and never inherits
 MEMORY_DREAM_*/CLAUDE_MEMORY_*/CLAUDE_JOB_DIR from the outer environment.
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -21,6 +20,7 @@ from pathlib import Path
 from memory_dream import apply as apply_mod
 from memory_dream import audit
 from memory_dream import transcript
+from memory_dream.compat import FileLock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -103,10 +103,10 @@ class Harness:
             "created_at_line": self.created_at_line,
             "proposals": self._proposals,
         }
-        (self.patch_set / "manifest.json").write_text(json.dumps(manifest))
+        (self.patch_set / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
         transcript_path = self.live_root / "proj" / "sess.jsonl"
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        transcript_path.write_text("\n".join(json.dumps(entry) for entry in transcript_lines))
+        transcript_path.write_text("\n".join(json.dumps(entry) for entry in transcript_lines), encoding="utf-8", newline="\n")
         self.transcript = transcript_path
         return self
 
@@ -122,7 +122,7 @@ class Harness:
             "patch_set_id": self.manifest_id if patch_set_id is None else patch_set_id,
         }
         path = self.root / path_name
-        path.write_text(json.dumps(selection))
+        path.write_text(json.dumps(selection), encoding="utf-8", newline="\n")
         return path
 
     def run(self, selection_path, *extra, mirror=True):
@@ -163,9 +163,9 @@ class MemoryDreamApplyTests(unittest.TestCase):
 
     def _standard_project(self, harness, key="proj"):
         live = harness.project(key)
-        (live / "MEMORY.md").write_text("- [Old](old.md)\n- [New](new.md)\n")
-        (live / "old.md").write_text(note("old", body="SUPERSEDED: see new."))
-        (live / "new.md").write_text(note("new", body="Current truth."))
+        (live / "MEMORY.md").write_text("- [Old](old.md)\n- [New](new.md)\n", encoding="utf-8", newline="\n")
+        (live / "old.md").write_text(note("old", body="SUPERSEDED: see new."), encoding="utf-8", newline="\n")
+        (live / "new.md").write_text(note("new", body="Current truth."), encoding="utf-8", newline="\n")
         harness.mirror_sync(key)
         return live
 
@@ -175,11 +175,9 @@ class MemoryDreamApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project()
-            (live / "old.md").write_text(note("old"))
-            (live / "hot.md").write_text(note("hot"))
-            (live / "MEMORY.md").write_text(
-                "# Index\n- [old](old.md) — resolved 2026-06-01 thing\n- [hot](hot.md) — active thing\n"
-            )
+            (live / "old.md").write_text(note("old"), encoding="utf-8", newline="\n")
+            (live / "hot.md").write_text(note("hot"), encoding="utf-8", newline="\n")
+            (live / "MEMORY.md").write_text("# Index\n- [old](old.md) — resolved 2026-06-01 thing\n- [hot](hot.md) — active thing\n", encoding="utf-8", newline="\n")
             harness.mirror_sync()
             entry = "- [old](old.md) — resolved 2026-06-01 thing"
             harness.add_proposal({
@@ -192,20 +190,20 @@ class MemoryDreamApplyTests(unittest.TestCase):
             harness.write()
             result = harness.run(harness.selection(["a1"]))
             self.assertEqual(result.returncode, 0, result.stderr)
-            index = (live / "MEMORY.md").read_text()
+            index = (live / "MEMORY.md").read_text(encoding="utf-8")
             self.assertNotIn("- [old](old.md)", index)
             self.assertIn("- [hot](hot.md)", index)
             self.assertIn("MEMORY-archive.md", index)  # pointer line
-            archive = (live / "MEMORY-archive.md").read_text()
+            archive = (live / "MEMORY-archive.md").read_text(encoding="utf-8")
             self.assertIn(entry, archive)
-            self.assertEqual((live / "old.md").read_text(), note("old"))  # body untouched
+            self.assertEqual((live / "old.md").read_text(encoding="utf-8"), note("old"))  # body untouched
 
     def test_archive_skips_on_stale_index_digest(self):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project()
-            (live / "old.md").write_text(note("old"))
-            (live / "MEMORY.md").write_text("# Index\n- [old](old.md) — cold 2026-06-01\n")
+            (live / "old.md").write_text(note("old"), encoding="utf-8", newline="\n")
+            (live / "MEMORY.md").write_text("# Index\n- [old](old.md) — cold 2026-06-01\n", encoding="utf-8", newline="\n")
             harness.mirror_sync()
             harness.add_proposal({
                 "id": "a1", "project": "proj", "action": "archive",
@@ -217,7 +215,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             harness.write()
             result = harness.run(harness.selection(["a1"]))
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("source-changed-since-draft", result.stdout + result.stderr + (harness.patch_set / "apply-manifest.json").read_text())
+            self.assertIn("source-changed-since-draft", result.stdout + result.stderr + (harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
             self.assertFalse((live / "MEMORY-archive.md").exists())
 
     def test_refuses_missing_and_mismatched_trace(self):
@@ -265,7 +263,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             self._close_old_proposal(harness)
             harness.write()
             # Diverge the mirror after the digest was captured.
-            (harness.mirror_root / "proj" / "new.md").write_text(note("new", body="mirror drift"))
+            (harness.mirror_root / "proj" / "new.md").write_text(note("new", body="mirror drift"), encoding="utf-8", newline="\n")
             result = harness.run(harness.selection(["p1"]))
             self.assertEqual(result.returncode, 1)
             self.assertIn("mirror not fresh", result.stderr)
@@ -292,7 +290,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             harness.write()
             result = harness.run(harness.selection(["p1", "escape"]))
             self.assertEqual(result.returncode, 0)
-            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
             statuses = {s["id"]: s for entry in manifest["projects"] for s in entry["proposals"]}
             self.assertEqual(statuses["escape"]["status"], "skipped")
             self.assertEqual(statuses["escape"]["reason"], "path-escape")
@@ -305,7 +303,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = self._standard_project(harness)
-            (live / "extra.md").write_text(note("extra", body="Another note."))
+            (live / "extra.md").write_text(note("extra", body="Another note."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             harness.add_proposal(
                 {
@@ -334,13 +332,13 @@ class MemoryDreamApplyTests(unittest.TestCase):
             harness.write()
             result = harness.run(harness.selection(["stale", "good"]))
             self.assertEqual(result.returncode, 0)
-            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
             statuses = {s["id"]: s for entry in manifest["projects"] for s in entry["proposals"]}
             self.assertEqual(statuses["stale"]["status"], "skipped")
             self.assertEqual(statuses["stale"]["reason"], "source-changed-since-draft")
             self.assertEqual(statuses["good"]["status"], "applied")
-            self.assertIn("compressed extra", (live / "extra.md").read_text())
-            self.assertNotIn("compressed", (live / "old.md").read_text())
+            self.assertIn("compressed extra", (live / "extra.md").read_text(encoding="utf-8"))
+            self.assertNotIn("compressed", (live / "old.md").read_text(encoding="utf-8"))
 
     def test_sensitive_proposal_refused_even_when_selected(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -361,11 +359,11 @@ class MemoryDreamApplyTests(unittest.TestCase):
             harness.write()
             result = harness.run(harness.selection(["sens"]))
             self.assertEqual(result.returncode, 0)
-            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
             statuses = {s["id"]: s for entry in manifest["projects"] for s in entry["proposals"]}
             self.assertEqual(statuses["sens"]["status"], "skipped")
             self.assertEqual(statuses["sens"]["reason"], "sensitive")
-            self.assertNotIn("rewritten", (live / "new.md").read_text())
+            self.assertNotIn("rewritten", (live / "new.md").read_text(encoding="utf-8"))
 
     def test_vanished_project_is_skipped_not_aborted(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -388,7 +386,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             harness.write()
             result = harness.run(harness.selection(["p1", "ghost"]))
             self.assertEqual(result.returncode, 0)
-            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
             statuses = {s["id"]: s for entry in manifest["projects"] for s in entry["proposals"]}
             self.assertEqual(statuses["ghost"]["status"], "skipped")
             self.assertEqual(statuses["ghost"]["reason"], "project-vanished")
@@ -401,18 +399,15 @@ class MemoryDreamApplyTests(unittest.TestCase):
             self._close_old_proposal(harness)
             harness.write()
             lock_path = harness.root / "held.lock"
-            held = open(lock_path, "w")
-            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            try:
+            # Hold the lock through compat.FileLock itself so the conflict is
+            # exercised with the platform's real primitive (flock / msvcrt).
+            with FileLock(lock_path):
                 result = harness.run(harness.selection(["p1"]), "--lock", str(lock_path))
                 self.assertEqual(result.returncode, 1)
                 # compat.FileLock's message ("lock <path> is held by another
                 # process"), not the pre-extraction script's own wording.
                 self.assertIn("is held by another process", result.stderr)
                 self.assertTrue((harness.live_root / "proj" / "memory" / "old.md").exists())
-            finally:
-                fcntl.flock(held, fcntl.LOCK_UN)
-                held.close()
 
     def test_partial_failure_leaves_project_untouched_and_records_split(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -422,7 +417,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             bad = self._standard_project(harness, "bad")
             # A path component that exists as a FILE makes staging raise before any
             # rename, so the bad project stays untouched (temp-rename discipline).
-            (bad / "sub").write_text("i am a file, not a dir")
+            (bad / "sub").write_text("i am a file, not a dir", encoding="utf-8", newline="\n")
             harness.mirror_sync("bad")
             harness.add_proposal(
                 {
@@ -439,7 +434,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             harness.write()
             result = harness.run(harness.selection(["p1", "bad1"]))
             self.assertEqual(result.returncode, 0)
-            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
             statuses = {s["id"]: s for entry in manifest["projects"] for s in entry["proposals"]}
             self.assertEqual(statuses["p1"]["status"], "applied")
             self.assertEqual(statuses["bad1"]["status"], "failed")
@@ -467,27 +462,27 @@ class MemoryDreamApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project("proj")
-            (live / "MEMORY.md").write_text("- [Old](old.md)\n- [Linker](linker.md)\n")
-            (live / "old.md").write_text(note("old", body="Old fact."))
-            (live / "linker.md").write_text(note("linker", body="See [[old]] for history."))
+            (live / "MEMORY.md").write_text("- [Old](old.md)\n- [Linker](linker.md)\n", encoding="utf-8", newline="\n")
+            (live / "old.md").write_text(note("old", body="Old fact."), encoding="utf-8", newline="\n")
+            (live / "linker.md").write_text(note("linker", body="See [[old]] for history."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             self._close_proposal(harness, "p1", "proj", "old.md", "new.md", "new")
             harness.write()
             self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
             self.assertFalse((live / "old.md").exists())
             self.assertTrue((live / "new.md").exists())
-            self.assertIn("[[new]]", (live / "linker.md").read_text())
-            self.assertNotIn("[[old]]", (live / "linker.md").read_text())
+            self.assertIn("[[new]]", (live / "linker.md").read_text(encoding="utf-8"))
+            self.assertNotIn("[[old]]", (live / "linker.md").read_text(encoding="utf-8"))
 
     def test_two_closes_sharing_bystander_no_corruption(self):
         # Regression coverage: two proposals close notes a third note links to.
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project("proj")
-            (live / "MEMORY.md").write_text("- [O1](old1.md)\n- [O2](old2.md)\n- [X](x.md)\n")
-            (live / "old1.md").write_text(note("old1", body="First."))
-            (live / "old2.md").write_text(note("old2", body="Second."))
-            (live / "x.md").write_text(note("x", body="Links [[old1]] and [[old2]]."))
+            (live / "MEMORY.md").write_text("- [O1](old1.md)\n- [O2](old2.md)\n- [X](x.md)\n", encoding="utf-8", newline="\n")
+            (live / "old1.md").write_text(note("old1", body="First."), encoding="utf-8", newline="\n")
+            (live / "old2.md").write_text(note("old2", body="Second."), encoding="utf-8", newline="\n")
+            (live / "x.md").write_text(note("x", body="Links [[old1]] and [[old2]]."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             self._close_proposal(harness, "p1", "proj", "old1.md", "new1.md", "new1")
             self._close_proposal(harness, "p2", "proj", "old2.md", "new2.md", "new2")
@@ -496,11 +491,11 @@ class MemoryDreamApplyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             statuses = {
                 s["id"]: s["status"]
-                for entry in json.loads((harness.patch_set / "apply-manifest.json").read_text())["projects"]
+                for entry in json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))["projects"]
                 for s in entry["proposals"]
             }
             self.assertEqual(statuses, {"p1": "applied", "p2": "applied"})
-            body = (live / "x.md").read_text()
+            body = (live / "x.md").read_text(encoding="utf-8")
             self.assertIn("[[new1]]", body)
             self.assertIn("[[new2]]", body)
             self.assertNotIn("[[old1]]", body)
@@ -512,16 +507,16 @@ class MemoryDreamApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project("proj")
-            (live / "MEMORY.md").write_text("- [O1](old1.md)\n- [O2](old2.md)\n- [X](x.md)\n")
-            (live / "old1.md").write_text(note("old1", body="First."))
-            (live / "old2.md").write_text(note("old2", body="Second."))
-            (live / "x.md").write_text(note("x", body="Links [[old1]] and [[old2]]."))
+            (live / "MEMORY.md").write_text("- [O1](old1.md)\n- [O2](old2.md)\n- [X](x.md)\n", encoding="utf-8", newline="\n")
+            (live / "old1.md").write_text(note("old1", body="First."), encoding="utf-8", newline="\n")
+            (live / "old2.md").write_text(note("old2", body="Second."), encoding="utf-8", newline="\n")
+            (live / "x.md").write_text(note("x", body="Links [[old1]] and [[old2]]."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             self._close_proposal(harness, "p1", "proj", "old1.md", "new1.md", "new1")
             self._close_proposal(harness, "p2", "proj", "old2.md", "new2.md", "new2")
             harness.write()
             self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)  # exclude p2
-            body = (live / "x.md").read_text()
+            body = (live / "x.md").read_text(encoding="utf-8")
             self.assertIn("[[new1]]", body)
             self.assertIn("[[old2]]", body)  # old2 kept, not retargeted
             self.assertTrue((live / "old2.md").exists())
@@ -557,14 +552,14 @@ class MemoryDreamApplyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             statuses = {
                 s["id"]: s["reason"]
-                for entry in json.loads((harness.patch_set / "apply-manifest.json").read_text())["projects"]
+                for entry in json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))["projects"]
                 for s in entry["proposals"]
             }
             self.assertEqual(statuses["p1"], "live-symlink")
             self.assertTrue((outside / "old.md").exists())  # never written through
 
     def _statuses(self, harness):
-        manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+        manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
         return {s["id"]: s for entry in manifest["projects"] for s in entry["proposals"]}
 
     def test_conflicting_survivor_across_proposals_skipped(self):
@@ -573,9 +568,9 @@ class MemoryDreamApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project("proj")
-            (live / "MEMORY.md").write_text("- [A](a.md)\n- [S](surv.md)\n")
-            (live / "a.md").write_text(note("a", body="Alpha."))
-            (live / "surv.md").write_text(note("surv", body="Survivor."))
+            (live / "MEMORY.md").write_text("- [A](a.md)\n- [S](surv.md)\n", encoding="utf-8", newline="\n")
+            (live / "a.md").write_text(note("a", body="Alpha."), encoding="utf-8", newline="\n")
+            (live / "surv.md").write_text(note("surv", body="Survivor."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             harness.add_proposal({
                 "id": "p1", "project": "proj", "action": "period-close", "survivor": "surv.md",
@@ -600,7 +595,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             self.assertEqual(statuses["p1"]["reason"], "conflicting-survivor")
             self.assertEqual(statuses["p2"]["reason"], "conflicting-survivor")
             self.assertTrue((live / "a.md").exists())  # nothing lost
-            self.assertIn("Survivor.", (live / "surv.md").read_text())  # unchanged
+            self.assertIn("Survivor.", (live / "surv.md").read_text(encoding="utf-8"))  # unchanged
             self.assertFalse((live / "b2.md").exists())
 
     def test_refuses_approval_without_token(self):
@@ -643,9 +638,9 @@ class MemoryDreamApplyTests(unittest.TestCase):
             self._standard_project(harness)
             self._close_old_proposal(harness)
             harness.write()
-            manifest = json.loads((harness.patch_set / "manifest.json").read_text())
+            manifest = json.loads((harness.patch_set / "manifest.json").read_text(encoding="utf-8"))
             del manifest["created_at_line"]
-            (harness.patch_set / "manifest.json").write_text(json.dumps(manifest))
+            (harness.patch_set / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
             result = harness.run(harness.selection(["p1"]))
             self.assertEqual(result.returncode, 1)
             self.assertIn("missing created_at_line", result.stderr)
@@ -685,9 +680,9 @@ class MemoryDreamApplyTests(unittest.TestCase):
             live = self._standard_project(harness)
             self._close_old_proposal(harness)
             harness.write()
-            manifest = json.loads((harness.patch_set / "manifest.json").read_text())
+            manifest = json.loads((harness.patch_set / "manifest.json").read_text(encoding="utf-8"))
             manifest["proposals"][0]["justification"] = "TAMPERED after approval"
-            (harness.patch_set / "manifest.json").write_text(json.dumps(manifest))
+            (harness.patch_set / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
             result = harness.run(harness.selection(["p1"]))
             self.assertEqual(result.returncode, 1)
             self.assertIn("does not match its proposal content", result.stderr)
@@ -700,7 +695,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             self._close_proposal(harness, "p1", "proj", "old.md", "new2.md", "new2")
             harness.write()
             self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
-            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+            manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
             self.assertIn({"project": "proj", "path": "old.md"}, manifest["deleted"])
 
     def test_stage_and_commit_rolls_back_on_commit_failure(self):
@@ -712,7 +707,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             memory = Path(temp) / "memory"
             memory.mkdir()
             existing = memory / "a.md"
-            existing.write_text("original A")
+            existing.write_text("original A", encoding="utf-8", newline="\n")
             fresh = memory / "b.md"
             real_replace = apply_mod.os.replace
             calls = {"n": 0}
@@ -726,7 +721,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             with mock.patch.object(apply_mod.os, "replace", flaky_replace):
                 with self.assertRaises(apply_mod.RolledBack):
                     apply_mod.stage_and_commit({existing: "rewritten A", fresh: "new B"}, [])
-            self.assertEqual(existing.read_text(), "original A")  # overwrite rolled back
+            self.assertEqual(existing.read_text(encoding="utf-8"), "original A")  # overwrite rolled back
             self.assertFalse(fresh.exists())  # newly-created file removed
             self.assertFalse((memory / "a.md.dream-tmp").exists())
             self.assertFalse((memory / "b.md.dream-tmp").exists())
@@ -757,7 +752,7 @@ class MemoryDreamApplyTests(unittest.TestCase):
             harness.write()
             # A sibling transcript touched "now" simulates another active session.
             other = harness.live_root / "proj" / "other-session.jsonl"
-            other.write_text("{}")
+            other.write_text("{}", encoding="utf-8", newline="\n")
             selection = harness.selection(["p1"])
             preflight = harness.run(selection, "--preflight", "--now-ts", str(other.stat().st_mtime))
             self.assertEqual(preflight.returncode, 0)
@@ -808,8 +803,8 @@ class SplitApplyTests(unittest.TestCase):
         live = harness.project(key)
         # The index line matches the note's canonical entry, so the conservative
         # refresh (old-entry match) applies to it.
-        (live / "MEMORY.md").write_text("- [mega](mega.md): Fixture note describing mega in detail\n")
-        (live / "mega.md").write_text(note("mega", body="Topic one. Topic two."))
+        (live / "MEMORY.md").write_text("- [mega](mega.md): Fixture note describing mega in detail\n", encoding="utf-8", newline="\n")
+        (live / "mega.md").write_text(note("mega", body="Topic one. Topic two."), encoding="utf-8", newline="\n")
         harness.mirror_sync(key)
         return live
 
@@ -819,14 +814,14 @@ class SplitApplyTests(unittest.TestCase):
             live = self._mega_project(harness)
             # A pre-existing unindexed bystander: healing it into the index is a
             # separately gated step (fix mode), never a consolidation side effect.
-            (live / "unindexed_bystander.md").write_text(note("unindexed_bystander", body="Quiet."))
+            (live / "unindexed_bystander.md").write_text(note("unindexed_bystander", body="Quiet."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             self._split_proposal(harness)
             harness.write()
             self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
             self.assertEqual(self._statuses(harness)["p1"]["status"], "applied")
-            self.assertIn("The gotcha.", (live / "gotcha.md").read_text())
-            index = (live / "MEMORY.md").read_text()
+            self.assertIn("The gotcha.", (live / "gotcha.md").read_text(encoding="utf-8"))
+            index = (live / "MEMORY.md").read_text(encoding="utf-8")
             # New atomic note indexed; the split note's entry line refreshed to the
             # new routing hook (recall is description-routed).
             self.assertIn("- [gotcha](gotcha.md): reusable operational gotcha worth recalling", index)
@@ -841,23 +836,23 @@ class SplitApplyTests(unittest.TestCase):
             self._split_proposal(harness)
             # The extract's destination appears between build and apply: applying
             # would silently overwrite a file the digest gate never covered.
-            (live / "gotcha.md").write_text(note("gotcha", body="Appeared meanwhile."))
+            (live / "gotcha.md").write_text(note("gotcha", body="Appeared meanwhile."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             harness.write()
             self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
             status = self._statuses(harness)["p1"]
             self.assertEqual(status["status"], "skipped")
             self.assertEqual(status["reason"], "destination-appeared-since-draft")
-            self.assertIn("Appeared meanwhile.", (live / "gotcha.md").read_text())
-            self.assertIn("Topic one.", (live / "mega.md").read_text())  # untouched
+            self.assertIn("Appeared meanwhile.", (live / "gotcha.md").read_text(encoding="utf-8"))
+            self.assertIn("Topic one.", (live / "mega.md").read_text(encoding="utf-8"))  # untouched
 
     def test_conflicting_extract_writes_both_skipped(self):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project("proj")
-            (live / "MEMORY.md").write_text("- [A](a.md)\n- [B](b.md)\n")
-            (live / "a.md").write_text(note("a", body="Alpha."))
-            (live / "b.md").write_text(note("b", body="Beta."))
+            (live / "MEMORY.md").write_text("- [A](a.md)\n- [B](b.md)\n", encoding="utf-8", newline="\n")
+            (live / "a.md").write_text(note("a", body="Alpha."), encoding="utf-8", newline="\n")
+            (live / "b.md").write_text(note("b", body="Beta."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             shared = {"path": "shared.md", "content": note("shared", body="Contested.")}
             for pid, rel in (("p1", "a.md"), ("p2", "b.md")):
@@ -883,7 +878,7 @@ class SplitApplyTests(unittest.TestCase):
             self.assertEqual(statuses["p1"]["reason"], "conflicting-survivor")
             self.assertEqual(statuses["p2"]["reason"], "conflicting-survivor")
             self.assertFalse((live / "shared.md").exists())
-            self.assertIn("Alpha.", (live / "a.md").read_text())  # untouched
+            self.assertIn("Alpha.", (live / "a.md").read_text(encoding="utf-8"))  # untouched
 
     def test_index_error_never_masks_a_committed_apply(self):
         # Index maintenance failing after the note commit must not report the
@@ -891,9 +886,9 @@ class SplitApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             memory_dir = Path(temp) / "proj" / "memory"
             memory_dir.mkdir(parents=True)
-            (memory_dir / "MEMORY.md").write_text("- [old](old.md)\n- [new](new.md)\n")
-            (memory_dir / "old.md").write_text(note("old", body="SUPERSEDED: see new."))
-            (memory_dir / "new.md").write_text(note("new", body="Current truth."))
+            (memory_dir / "MEMORY.md").write_text("- [old](old.md)\n- [new](new.md)\n", encoding="utf-8", newline="\n")
+            (memory_dir / "old.md").write_text(note("old", body="SUPERSEDED: see new."), encoding="utf-8", newline="\n")
+            (memory_dir / "new.md").write_text(note("new", body="Current truth."), encoding="utf-8", newline="\n")
             proposal = {
                 "id": "p1", "project": "proj", "action": "period-close", "survivor": "new.md",
                 "sources": [
@@ -920,7 +915,7 @@ class SplitApplyTests(unittest.TestCase):
             self.assertEqual(result["proposals"][0]["status"], "applied")
             self.assertIn("disk full", result["index_error"])
             self.assertEqual(result["deleted"], ["old.md"])
-            self.assertIn("Closed truth.", (memory_dir / "new.md").read_text())
+            self.assertIn("Closed truth.", (memory_dir / "new.md").read_text(encoding="utf-8"))
             self.assertFalse((memory_dir / "old.md").exists())
 
     def test_split_preserves_hand_annotated_index_line(self):
@@ -929,12 +924,12 @@ class SplitApplyTests(unittest.TestCase):
             harness = Harness(Path(temp))
             live = self._mega_project(harness)
             annotated = "- [mega](mega.md): Fixture note describing mega in detail; NOTE see runbook\n"
-            (live / "MEMORY.md").write_text(annotated)
+            (live / "MEMORY.md").write_text(annotated, encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             self._split_proposal(harness)
             harness.write()
             self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
-            index = (live / "MEMORY.md").read_text()
+            index = (live / "MEMORY.md").read_text(encoding="utf-8")
             self.assertIn(annotated.strip(), index)  # hand-edited line preserved
             self.assertIn("- [gotcha](gotcha.md):", index)  # extract still appended
 
@@ -942,8 +937,8 @@ class SplitApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project("proj")
-            (live / "MEMORY.md").write_text("- [a](a.md): stale index hook\n")
-            (live / "a.md").write_text(note("a", body="Body stays."))
+            (live / "MEMORY.md").write_text("- [a](a.md): stale index hook\n", encoding="utf-8", newline="\n")
+            (live / "a.md").write_text(note("a", body="Body stays."), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
             redescribed = note("a", body="Body stays.").replace(
                 "description: Fixture note describing a in detail",
@@ -965,10 +960,10 @@ class SplitApplyTests(unittest.TestCase):
             harness.write()
             self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
             self.assertEqual(self._statuses(harness)["p1"]["status"], "applied")
-            self.assertIn("fresh routing hook after the correction", (live / "a.md").read_text())
+            self.assertIn("fresh routing hook after the correction", (live / "a.md").read_text(encoding="utf-8"))
             # The index line and the note frontmatter can no longer diverge.
-            self.assertIn("- [a](a.md): fresh routing hook after the correction", (live / "MEMORY.md").read_text())
-            self.assertNotIn("stale index hook", (live / "MEMORY.md").read_text())
+            self.assertIn("- [a](a.md): fresh routing hook after the correction", (live / "MEMORY.md").read_text(encoding="utf-8"))
+            self.assertNotIn("stale index hook", (live / "MEMORY.md").read_text(encoding="utf-8"))
 
 
 class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
@@ -977,7 +972,7 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
     fail-closed restore drift, and the archive loop's sensitive-note skip."""
 
     def _statuses(self, harness):
-        manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+        manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text(encoding="utf-8"))
         return {s["id"]: s for entry in manifest["projects"] for s in entry["proposals"]}
 
     def _restore(self, harness, *extra):
@@ -998,9 +993,9 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
 
     def _standard_project(self, harness, key="proj"):
         live = harness.project(key)
-        (live / "MEMORY.md").write_text("- [Old](old.md)\n- [New](new.md)\n")
-        (live / "old.md").write_text(note("old", body="SUPERSEDED: see new."))
-        (live / "new.md").write_text(note("new", body="Current truth."))
+        (live / "MEMORY.md").write_text("- [Old](old.md)\n- [New](new.md)\n", encoding="utf-8", newline="\n")
+        (live / "old.md").write_text(note("old", body="SUPERSEDED: see new."), encoding="utf-8", newline="\n")
+        (live / "new.md").write_text(note("new", body="Current truth."), encoding="utf-8", newline="\n")
         harness.mirror_sync(key)
         return live
 
@@ -1015,7 +1010,7 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             harness = Harness(Path(temp))
             live = self._standard_project(harness)
             secret = harness.root / "outside_secret.md"
-            secret.write_text("SECRET-CONTENT\n")
+            secret.write_text("SECRET-CONTENT\n", encoding="utf-8", newline="\n")
             harness.add_proposal({
                 "id": "p1", "project": "proj", "action": "period-close",
                 "sources": [{"path": "old.md", "digest": harness.digest("proj", "old.md")}],
@@ -1035,12 +1030,12 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             self.assertEqual(statuses["p1"]["status"], "applied")
             # The outside file was neither deleted nor copied into the backup.
             self.assertTrue(secret.is_file())
-            self.assertEqual(secret.read_text(), "SECRET-CONTENT\n")
+            self.assertEqual(secret.read_text(encoding="utf-8"), "SECRET-CONTENT\n")
             backup_root = harness.patch_set / "backup"
             for path in backup_root.rglob("*"):
                 if path.is_file():
-                    self.assertNotIn("SECRET-CONTENT", path.read_text(errors="replace"))
-            entries = json.loads((backup_root / "backup-manifest.json").read_text())["entries"]
+                    self.assertNotIn("SECRET-CONTENT", path.read_text(encoding="utf-8", errors="replace"))
+            entries = json.loads((backup_root / "backup-manifest.json").read_text(encoding="utf-8"))["entries"]
             self.assertTrue(all(".." not in entry["path"] for entry in entries))
             self.assertFalse(any(entry["path"].endswith("outside_secret.md") for entry in entries))
 
@@ -1051,7 +1046,7 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = self._standard_project(harness)
-            original = (live / "new.md").read_text()
+            original = (live / "new.md").read_text(encoding="utf-8")
             harness.add_proposal({
                 "id": "p1", "project": "proj", "action": "compress",
                 "sources": [{"path": "new.md", "digest": harness.digest("proj", "new.md")}],
@@ -1060,17 +1055,17 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             })
             harness.write()
             self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
-            self.assertIn("V1 compressed", (live / "new.md").read_text())
+            self.assertIn("V1 compressed", (live / "new.md").read_text(encoding="utf-8"))
             bm_path = harness.patch_set / "backup" / "backup-manifest.json"
-            bm = json.loads(bm_path.read_text())
+            bm = json.loads(bm_path.read_text(encoding="utf-8"))
             bm["entries"].append({"project": "proj", "path": "../../../evil.md", "sha256": "a" * 64})
-            bm_path.write_text(json.dumps(bm))
+            bm_path.write_text(json.dumps(bm), encoding="utf-8", newline="\n")
             result = self._restore(harness)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("refusing out-of-bounds backup path", result.stderr)
             self.assertFalse((harness.root / "evil.md").exists())
             # The legitimate entry still restored new.md to its pre-apply bytes.
-            self.assertEqual((live / "new.md").read_text(), original)
+            self.assertEqual((live / "new.md").read_text(encoding="utf-8"), original)
 
     def test_reapply_preserves_the_original_pre_first_apply_backup(self):
         # A resumed second apply on the same patch set (a wider approval) MERGES
@@ -1080,10 +1075,10 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = self._standard_project(harness)
-            (live / "extra.md").write_text(note("extra", body="Extra original"))
+            (live / "extra.md").write_text(note("extra", body="Extra original"), encoding="utf-8", newline="\n")
             harness.mirror_sync("proj")
-            new_original = (live / "new.md").read_text()
-            extra_original = (live / "extra.md").read_text()
+            new_original = (live / "new.md").read_text(encoding="utf-8")
+            extra_original = (live / "extra.md").read_text(encoding="utf-8")
             harness.add_proposal({
                 "id": "p1", "project": "proj", "action": "compress",
                 "sources": [{"path": "new.md", "digest": harness.digest("proj", "new.md")}],
@@ -1100,8 +1095,8 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             # Pass 1: approve only p1. The backup captures new.md at ORIGINAL bytes.
             self.assertEqual(harness.run(harness.selection(["p1"]), mirror=False).returncode, 0)
             backup_new = harness.patch_set / "backup" / "proj" / "new.md"
-            self.assertEqual(backup_new.read_text(), new_original)
-            self.assertIn("V1 compressed", (live / "new.md").read_text())
+            self.assertEqual(backup_new.read_text(encoding="utf-8"), new_original)
+            self.assertIn("V1 compressed", (live / "new.md").read_text(encoding="utf-8"))
             # Pass 2: approve p1 + p2. p1's source digest is now stale (skipped),
             # p2 applies, and the merge must NOT re-copy the (now V1) live new.md
             # over the original backup.
@@ -1110,10 +1105,10 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             statuses = self._statuses(harness)
             self.assertEqual(statuses["p1"]["reason"], "source-changed-since-draft")
             self.assertEqual(statuses["p2"]["status"], "applied")
-            self.assertEqual(backup_new.read_text(), new_original)  # preserved, not V1
+            self.assertEqual(backup_new.read_text(encoding="utf-8"), new_original)  # preserved, not V1
             entries = {
                 (entry["project"], entry["path"]): entry
-                for entry in json.loads((harness.patch_set / "backup" / "backup-manifest.json").read_text())["entries"]
+                for entry in json.loads((harness.patch_set / "backup" / "backup-manifest.json").read_text(encoding="utf-8"))["entries"]
             }
             self.assertEqual(
                 entries[("proj", "new.md")]["sha256"],
@@ -1121,8 +1116,8 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             )
             # Restore reverses BOTH files to the pre-first-apply state.
             self.assertEqual(self._restore(harness).returncode, 0)
-            self.assertEqual((live / "new.md").read_text(), new_original)
-            self.assertEqual((live / "extra.md").read_text(), extra_original)
+            self.assertEqual((live / "new.md").read_text(encoding="utf-8"), new_original)
+            self.assertEqual((live / "extra.md").read_text(encoding="utf-8"), extra_original)
 
     def test_restore_fails_closed_when_apply_manifest_missing(self):
         # If apply-manifest.json is gone (apply crashed after snapshot, or it was
@@ -1131,7 +1126,7 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = self._standard_project(harness)
-            original = (live / "new.md").read_text()
+            original = (live / "new.md").read_text(encoding="utf-8")
             harness.add_proposal({
                 "id": "p1", "project": "proj", "action": "compress",
                 "sources": [{"path": "new.md", "digest": harness.digest("proj", "new.md")}],
@@ -1145,11 +1140,11 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             self.assertEqual(refused.returncode, 1)
             self.assertIn("apply-manifest.json missing", refused.stderr)
             self.assertIn("--force", refused.stderr)
-            self.assertIn("V1 compressed", (live / "new.md").read_text())  # not restored
+            self.assertIn("V1 compressed", (live / "new.md").read_text(encoding="utf-8"))  # not restored
             forced = self._restore(harness, "--force")
             self.assertEqual(forced.returncode, 0, forced.stderr)
             self.assertIn("proceeding over drift", forced.stderr)
-            self.assertEqual((live / "new.md").read_text(), original)
+            self.assertEqual((live / "new.md").read_text(encoding="utf-8"), original)
 
     def test_sensitive_archive_proposal_is_skipped(self):
         # The archive loop runs before the generic loop; a sensitive archive
@@ -1157,8 +1152,8 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             live = harness.project()
-            (live / "old.md").write_text(note("old"))
-            (live / "MEMORY.md").write_text("# Index\n- [old](old.md) — resolved 2026-06-01 thing\n")
+            (live / "old.md").write_text(note("old"), encoding="utf-8", newline="\n")
+            (live / "MEMORY.md").write_text("# Index\n- [old](old.md) — resolved 2026-06-01 thing\n", encoding="utf-8", newline="\n")
             harness.mirror_sync()
             entry = "- [old](old.md) — resolved 2026-06-01 thing"
             harness.add_proposal({
@@ -1173,7 +1168,7 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(self._statuses(harness)["a1"]["reason"], "sensitive")
             self.assertFalse((live / "MEMORY-archive.md").exists())
-            self.assertIn(entry, (live / "MEMORY.md").read_text())  # index untouched
+            self.assertIn(entry, (live / "MEMORY.md").read_text(encoding="utf-8"))  # index untouched
 
 
 if __name__ == "__main__":
