@@ -1,6 +1,6 @@
 ---
 name: memory-dream
-description: Operator-gated consolidation and recall measurement for Claude Code auto-memory. Reach for it when a project's memory has accumulated superseded, stale, or oversized notes, when the MEMORY.md index has grown past what Claude Code loads, or when you want to measure whether a memory change actually improved recall. It routes to the /memory-dream:dream and /memory-dream:eval commands and never writes memory itself.
+description: Reach for this when a project's auto-memory has accumulated rot a consolidation pass would catch, or when you want to measure whether a memory change actually improved recall.
 ---
 
 # memory-dream: the sleep cycle for Claude Code auto-memory
@@ -23,9 +23,9 @@ calling the `apply` step directly, bypasses every gate the pass exists for.
   deterministic triage finds the rot, a zero-tool subagent drafts fixes it
   cannot apply, the operator approves a diff item by item, and only approved
   changes are written (every one recoverable). Suggest this when triage would
-  find flagged notes: superseded pairs, stale or over-broad descriptions,
-  oversized bodies, or an index over the load cap (which the pass's archive tier
-  demotes rather than deletes).
+  find flagged notes — its checks are mechanical: supersession markers,
+  oversized bodies, decayed confidence, stale-dated content, or an index over
+  the load cap (which the pass's archive tier demotes rather than deletes).
 - **`/memory-dream:eval`** — a read-only recall-regression eval: it freezes a
   content-anchored question suite over the live corpus and scores whether a
   fixed judge, seeing only `MEMORY.md` descriptions, routes each question to a

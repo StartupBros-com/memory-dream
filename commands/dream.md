@@ -604,7 +604,11 @@ mirror's current tree reflects the consolidation, while its history keeps
 the deleted content recoverable regardless. For a reviewable, revertable
 record, open a **draft PR** against the mirror repository for that commit —
 reverting it, plus restoring live from mirror history, is the mirror-mode
-undo path.
+undo path. If a PR-review plugin is installed (e.g. pro-gate from the same
+marketplace), running it on that draft PR composes well here: the mirror
+commit is an ordinary reviewable diff. Review complements this pipeline's
+gates, never substitutes for them — the recall eval still decides whether
+the pass helped.
 
 **Either mode:** after recording, close the feedback loop — if Stage 0
 produced a baseline, rerun `/memory-dream:eval` with a `post-<ts>` run tag
