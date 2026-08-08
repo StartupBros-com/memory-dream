@@ -150,8 +150,26 @@ def _file_config() -> dict:
     return data
 
 
+def _apply_env_overrides() -> None:
+    """MEMORY_DREAM_<NAME> env vars override any threshold (env beats file)."""
+    for name in _OVERRIDABLE:
+        raw = os.environ.get(_ENV_PREFIX + name)
+        if raw is None:
+            continue
+        current = globals()[name]
+        try:
+            if isinstance(current, bool):  # not currently used; guard anyway
+                globals()[name] = raw.lower() in ("1", "true", "yes")
+            elif isinstance(current, list):
+                globals()[name] = json.loads(raw)
+            else:
+                globals()[name] = type(current)(raw)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"env var {_ENV_PREFIX + name}: expected {type(current).__name__}: {exc}") from exc
+
+
 def load_file_config() -> None:
-    """Apply the JSON config file's threshold overrides once per process."""
+    """Apply config overrides once per process: file first, then env on top."""
     global _FILE_CONFIG_LOADED
     if _FILE_CONFIG_LOADED:
         return
@@ -177,6 +195,7 @@ def load_file_config() -> None:
             f"unknown config key(s) in {config_file_path()}: {', '.join(sorted(unknown))} "
             f"(valid: mirror_root, mirror_push_hint, {', '.join(sorted(k.lower() for k in _OVERRIDABLE))})"
         )
+    _apply_env_overrides()
 
 
 def add_root_args(parser) -> None:

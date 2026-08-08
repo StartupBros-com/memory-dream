@@ -1,0 +1,54 @@
+name: Tests
+
+# No step in this workflow calls a model or needs credentials. The suite is
+# deterministic by design: memory_dream/ makes no network calls, the tests
+# drive the CLI as a subprocess against throwaway fixtures, and the two
+# guard scripts are plain AST/text checks. That is the point -- a plugin
+# whose pitch is "refuses rather than guesses" has no business shipping a
+# change nobody ran the tests on, and there is no excuse for the tests
+# needing a secret to run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+        python-version: ['3.10', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  guards:
+    # Repo-maintenance checks that only need to run once, not once per OS x
+    # Python cell: the sanitization contract and the stdlib-only contract are
+    # both properties of the source tree, not of the interpreter running it.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: No third-party imports under memory_dream/
+        run: python3 scripts/check_stdlib_only.py
+
+      - name: No private-harness references shipped
+        run: python3 scripts/check_no_private_refs.py
