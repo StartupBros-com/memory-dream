@@ -14,8 +14,13 @@ patterns it looks for) and docs/EXTRACTION-DESIGN.md (the design record,
 which documents the source it was extracted from and is explicitly exempt).
 
 `CLAUDE_JOB_DIR` is a single, deliberate exception: memory_dream/config.py
-references it as one link in the scratch-directory resolution chain, and
-that reference is the point of the design, not a leak.
+references it as one link in the scratch-directory resolution chain, and the
+tests name it only to STRIP it from a subprocess env (so a developer running
+the suite inside a Claude Code job cannot have real scratch leak in) -- both
+references are the point of the design, not a leak. The exemption below
+therefore covers config.py and the whole `tests/` tree. Only the env-var NAME
+is exempted there; a leaked path VALUE would still trip the `/home/will`
+pattern, so this does not reduce protection.
 
 This is a repo-maintenance tool. It is not part of the shipped plugin, makes
 no model calls, and imports only stdlib itself.
@@ -35,7 +40,9 @@ EXCLUDED_FILES = {SELF, DESIGN_DOC}
 
 # (label, literal needle, case_insensitive, {relpaths exempt from just this
 # pattern}). Exemptions are per-pattern, not per-file: an exempt file is
-# still scanned for every other pattern.
+# still scanned for every other pattern. An exemption entry ending in "/" is a
+# directory prefix (e.g. "tests/" exempts every file under tests/); any other
+# entry is an exact repo-relative path.
 LITERAL_PATTERNS: list[tuple[str, str, bool, frozenset[str]]] = [
     ("private-home-path", "/home/will", False, frozenset()),
     ("private-dotfiles-path", "~/dotfiles", True, frozenset()),
@@ -44,7 +51,7 @@ LITERAL_PATTERNS: list[tuple[str, str, bool, frozenset[str]]] = [
     ("private-harness-workflow", "memory-push", True, frozenset()),
     ("private-harness-workflow", "harness-weekly", True, frozenset()),
     ("private-harness-workflow", "memory-mine", True, frozenset()),
-    ("private-harness-env-var", "CLAUDE_JOB_DIR", False, frozenset({"memory_dream/config.py"})),
+    ("private-harness-env-var", "CLAUDE_JOB_DIR", False, frozenset({"memory_dream/config.py", "tests/"})),
     ("private-project-codename", "prbot", True, frozenset()),
     ("private-project-codename", "pi-evals", True, frozenset()),
     ("private-project-codename", "wsl-cdp", True, frozenset()),
@@ -88,6 +95,12 @@ def tracked_files() -> list[Path]:
     return [REPO_ROOT / line for line in out.splitlines() if line]
 
 
+def _exempt(rel: str, exempt: frozenset[str]) -> bool:
+    """True if rel is exactly an exempt path, or lives under an exempt directory
+    (an exemption entry ending in "/" is treated as a directory prefix)."""
+    return any(rel == entry or (entry.endswith("/") and rel.startswith(entry)) for entry in exempt)
+
+
 def scan_file(path: Path) -> list[str]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -99,7 +112,7 @@ def scan_file(path: Path) -> list[str]:
 
     for lineno, line in enumerate(text.splitlines(), start=1):
         for label, needle, case_insensitive, exempt in LITERAL_PATTERNS:
-            if rel in exempt:
+            if _exempt(rel, exempt):
                 continue
             haystack = line.lower() if case_insensitive else line
             target = needle.lower() if case_insensitive else needle

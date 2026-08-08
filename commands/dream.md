@@ -274,6 +274,37 @@ inline (PR number, commit, doc path, or check date), or a later verifier
 will correctly flag it as unsupported. A proposal that cannot be made
 truthful is dropped. Only fidelity-clean drafts proceed to build.
 
+### 3.6 Repo-grounding for task-state survivors (MANDATORY)
+
+Fidelity verification (Stage 3.5) checks proposals against SOURCE notes and
+therefore inherits the sources' own staleness. Any survivor that carries a
+TASK-STATE claim (pending work, an open PR, an unresolved issue, an
+"endgame" plan) must additionally be checked against reality with read-only
+git/gh lookups before the patch set is finalized: is the pending thing
+still pending on the live repo? Measured 2026-07-19 during the authors'
+consolidation campaign: a survivor presented a reconciliation as pending
+that had actually shipped 12 days earlier, and five other verification
+layers passed it before this check caught it. Verdicts: SHIPPED/CONTRADICTED
+means rewrite the survivor as a resolved record with inline evidence (PR,
+merge date, verification date); STILL-PENDING means it stands. One cheap
+read-only subagent per survivor.
+
+If `build` printed a `WARN anticipated index ... exceeds the load cap` line
+(or `report.json` has a non-empty `index_over_cap`), fix it BEFORE the
+benefit check: trim this pass's own descriptions to router form first; if
+still over, defer extracts or flag the project for the archive-tier
+decision. Never park a token on a patch set that knowingly spends
+routing-invisible index budget.
+
+**Archive-first sequencing (measured 2026-07-31 during the authors'
+consolidation campaign):** when the pass was TRIGGERED by an over-cap index
+(`triage`'s `index_over_budget`, or a prior `build` WARN), run the Archive
+tier FIRST, in the same session, before drafting splits — consolidation
+cannot fix an over-cap index and split-heavy passes make it worse (one such
+pass grew two over-cap indexes by 28 lines). `build` enforces the floor: it
+refuses to assemble a patch set that grows an over-cap index unless
+`--allow-index-growth` is passed after an explicit operator decision.
+
 ### 3.7 Checker-check the correction layer (MANDATORY when edits were applied)
 
 Every edit applied after the fidelity fleet ran (high fixes, med/low
@@ -415,37 +446,6 @@ never against `manifest.json`; the manifest's JSON-escaped single-line
 strings cost more tokens to read and cannot be quoted exactly, and each
 agent otherwise pays for all 20+ files to review its handful. This is input
 shaping only: gate count, prompts, and review depth are unchanged.
-
-### 3.6 Repo-grounding for task-state survivors (MANDATORY)
-
-Fidelity verification (Stage 3.5) checks proposals against SOURCE notes and
-therefore inherits the sources' own staleness. Any survivor that carries a
-TASK-STATE claim (pending work, an open PR, an unresolved issue, an
-"endgame" plan) must additionally be checked against reality with read-only
-git/gh lookups before the patch set is finalized: is the pending thing
-still pending on the live repo? Measured 2026-07-19 during the authors'
-consolidation campaign: a survivor presented a reconciliation as pending
-that had actually shipped 12 days earlier, and five other verification
-layers passed it before this check caught it. Verdicts: SHIPPED/CONTRADICTED
-means rewrite the survivor as a resolved record with inline evidence (PR,
-merge date, verification date); STILL-PENDING means it stands. One cheap
-read-only subagent per survivor.
-
-If `build` printed a `WARN anticipated index ... exceeds the load cap` line
-(or `report.json` has a non-empty `index_over_cap`), fix it BEFORE the
-benefit check: trim this pass's own descriptions to router form first; if
-still over, defer extracts or flag the project for the archive-tier
-decision. Never park a token on a patch set that knowingly spends
-routing-invisible index budget.
-
-**Archive-first sequencing (measured 2026-07-31 during the authors'
-consolidation campaign):** when the pass was TRIGGERED by an over-cap index
-(`triage`'s `index_over_budget`, or a prior `build` WARN), run the Archive
-tier FIRST, in the same session, before drafting splits — consolidation
-cannot fix an over-cap index and split-heavy passes make it worse (one such
-pass grew two over-cap indexes by 28 lines). `build` enforces the floor: it
-refuses to assemble a patch set that grows an over-cap index unless
-`--allow-index-growth` is passed after an explicit operator decision.
 
 ### 4.5 Benefit check on changed notes (MANDATORY before preview)
 

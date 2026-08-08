@@ -68,66 +68,85 @@ def _run_doctor(args) -> int:
 
     from memory_dream import transcript
 
-    checks: list[tuple[str, bool, str]] = []  # (label, ok, detail)
+    # (label, ok, detail, fatal). Only a fatal failure exits non-zero: the tool
+    # cannot run at all (wrong Python, no writable scratch, broken lock backend,
+    # or no memory root to operate on). Everything else — consent trace, mirror
+    # freshness, crash leftovers, git/gh, the index-cap reminder — is advisory:
+    # it reports how this environment degrades, not that the tool is broken. A
+    # missing consent trace, in particular, only affects `apply`; the read-only
+    # triage/plan/build/eval stages the quickstart leads with do not need it.
+    checks: list[tuple[str, bool, str, bool]] = []
 
     ok = sys.version_info >= (3, 10)
-    checks.append(("python", ok, f"{sys.version.split()[0]} (need >= 3.10)"))
+    checks.append(("python", ok, f"{sys.version.split()[0]} (need >= 3.10)", True))
 
     live = Path(args.live_root).expanduser()
     projects = [p for p in live.iterdir() if (p / "memory").is_dir()] if live.is_dir() else []
     checks.append(
-        ("live root", live.is_dir(), f"{live} — {len(projects)} project(s) with memory" if live.is_dir() else f"{live} missing")
+        ("live root", live.is_dir(), f"{live} — {len(projects)} project(s) with memory" if live.is_dir() else f"{live} missing", True)
     )
 
     if args.mirror_root:
         mirror = Path(args.mirror_root).expanduser()
-        checks.append(("mirror mode", mirror.is_dir(), f"{mirror}" if mirror.is_dir() else f"{mirror} missing"))
+        checks.append(("mirror mode", mirror.is_dir(), f"{mirror}" if mirror.is_dir() else f"{mirror} missing", False))
     else:
-        checks.append(("snapshot mode", True, "no mirror configured; apply snapshots into the patch set (restore via `memory-dream restore`)"))
+        checks.append(("snapshot mode", True, "no mirror configured; apply snapshots into the patch set (restore via `memory-dream restore`)", False))
 
     try:
         tdir = transcript.transcripts_dir_for(Path.cwd())
         found = tdir.is_dir()
-        detail = f"{tdir}" if found else f"{tdir} not found — consent trace unavailable from this cwd"
+        detail = f"{tdir}" if found else (
+            f"{tdir} not found — consent trace unavailable from this cwd "
+            "(only needed for `apply`; triage/plan/build/eval work without it)"
+        )
         probe = transcript.schema_probe(tdir) if found else None
         if probe is not None:
             detail += f"; schema probe: {probe}"
-        checks.append(("consent trace", found, detail))
+        checks.append(("consent trace", found, detail, False))
     except Exception as exc:  # pragma: no cover - environment specific
-        checks.append(("consent trace", False, str(exc)))
+        checks.append(("consent trace", False, str(exc), False))
 
     from memory_dream import compat
 
     scratch = config.scratch_dir()
-    checks.append(("scratch dir", os.access(scratch, os.W_OK), str(scratch)))
+    checks.append(("scratch dir", os.access(scratch, os.W_OK), str(scratch), True))
     lock_probe = scratch / ".doctor-lock-probe"
     try:
         with compat.FileLock(lock_probe):
             pass
-        checks.append(("single-flight lock", True, f"{os.name} lock backend works"))
+        checks.append(("single-flight lock", True, f"{os.name} lock backend works", True))
     except Exception as exc:  # pragma: no cover - environment specific
-        checks.append(("single-flight lock", False, str(exc)))
+        checks.append(("single-flight lock", False, str(exc), True))
 
     orphans = list(live.glob("*/memory/*.dream-tmp")) if live.is_dir() else []
     checks.append(
-        ("staging leftovers", not orphans, f"{len(orphans)} orphaned *.dream-tmp file(s) — crash leftovers, review and remove" if orphans else "none")
+        ("staging leftovers", not orphans, f"{len(orphans)} orphaned *.dream-tmp file(s) — crash leftovers, review and remove" if orphans else "none", False)
     )
 
     for tool in ("git", "gh"):
-        checks.append((f"{tool} (optional)", True, shutil.which(tool) or "not found — repo-grounding checks degrade to note-only"))
+        checks.append((f"{tool} (optional)", True, shutil.which(tool) or "not found — repo-grounding checks degrade to note-only", False))
 
     checks.append(
         (
             "index cap",
             True,
             f"{config.INDEX_LOAD_MAX_LINES} lines / {config.INDEX_LOAD_MAX_BYTES} bytes — measured against Claude Code v2.1.211; re-verify after CLI upgrades (docs/TUNING.md)",
+            False,
         )
     )
 
-    hard_failures = [c for c in checks if not c[1] and "optional" not in c[0]]
-    for label, ok, detail in checks:
-        print(f"{'ok  ' if ok else 'FAIL'} {label}: {detail}")
-    print(f"doctor: {len(checks) - len(hard_failures)}/{len(checks)} checks passed")
+    hard_failures = [c for c in checks if not c[1] and c[3]]
+    advisories = [c for c in checks if not c[1] and not c[3]]
+    for label, ok, detail, fatal in checks:
+        mark = "ok  " if ok else ("FAIL" if fatal else "warn")
+        print(f"{mark} {label}: {detail}")
+    passed = len(checks) - len(hard_failures) - len(advisories)
+    summary = f"doctor: {passed}/{len(checks)} checks passed"
+    if advisories:
+        summary += f", {len(advisories)} advisory (non-fatal)"
+    if hard_failures:
+        summary += f", {len(hard_failures)} FAIL"
+    print(summary)
     return 1 if hard_failures else 0
 
 

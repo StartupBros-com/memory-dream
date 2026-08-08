@@ -19,12 +19,14 @@ One pass, operator-gated end to end:
 3. **Draft** hands each cluster to a **zero-tool subagent**: note bodies in, one JSON object out. A prompt injection inside a note body has no Bash, no Write, no file access, and its output is re-validated, path-confined, and operator-reviewed before it can change anything.
 4. **Verify** runs the drafted changes through fidelity verification against sources, repo grounding for task-state claims, a checker pass over the corrections themselves, and a fresh-eyes quality panel. The build refuses any cluster without a recorded, content-bound verification verdict.
 5. **Preview** builds a patch set with per-proposal diffs and an HTML review surface. You approve item by item, by token. Reject everything and nothing is written.
-6. **Apply** runs a gate stack that refuses rather than guesses: single-flight lock, consent trace, destination confinement, sensitive-content skip, changed-since-draft skip, per-project atomic writes with rollback. Every touched file is snapshotted first; `memory-dream restore` undoes an applied pass.
+6. **Apply** runs a gate stack that refuses rather than guesses: single-flight lock, consent trace, sensitive-content skip, changed-since-draft skip, destination confinement, per-project atomic writes with rollback. Every touched file is snapshotted first; `memory-dream restore` undoes an applied pass.
 7. **Measure** with the recall eval: frozen, content-anchored questions routed against the live index before and after. A consolidation that loses to the old index on its own target notes is a build defect, and the pipeline treats it as one.
 
 **Proposal-only is a hard rule, not a mode.** No semantic change applies without your approval. The tool never merges, closes, or compresses a note on its own.
 
 ## Using it
+
+**As a Claude Code plugin** (depends on the external marketplace repo):
 
 ```
 /plugin marketplace add StartupBros-com/hov-marketplace
@@ -38,11 +40,19 @@ Then, in any project:
 /memory-dream:eval         # freeze a recall suite, score routing accuracy
 ```
 
-Or drive the CLI directly. It is stdlib-only Python, zero dependencies:
+**As a standalone CLI** — self-contained, works from a clone of this repo alone. It is stdlib-only Python, zero dependencies. Either drive it in place from the checkout:
 
 ```
 python3 -m memory_dream doctor     # preflight: what works on this machine
 python3 -m memory_dream triage     # what would a pass even do here?
+```
+
+or install it onto `PATH` (`pyproject.toml` declares the `memory-dream` console script):
+
+```
+git clone <this repo> && cd memory-dream
+pipx install .    # or: pip install .
+memory-dream doctor
 ```
 
 Start with `doctor`. It tells you which mode you are in (snapshot vs mirror), whether the consent trace can see your transcripts, and which caps apply.

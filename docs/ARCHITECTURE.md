@@ -12,6 +12,10 @@ semantics, and recovery.
 
 ### Layer 1 — deterministic triage and fix (`audit.py`)
 
+A **wikilink** is the `[[note-name]]` cross-reference syntax memory notes use
+to link to one another — the stem inside the brackets is the target note's
+filename without `.md`.
+
 No LLM, no session, no model call. `memory-dream triage` scores every live
 note on structure only: supersession markers (`SUPERSEDED`/`CORRECTED`/
 `RESOLVED` as a case-sensitive line lead), body size, file-modification-time
@@ -35,17 +39,17 @@ Still no model calls. This layer turns triage output and a subagent's drafts
 into a reviewable, appliable artifact, and then applies only what the
 operator approved.
 
-`assemble.py plan` clusters flagged notes into per-pass groups (respecting
+`memory-dream plan` clusters flagged notes into per-pass groups (respecting
 the per-pass cluster and per-cluster note caps), deferring overflow rather
 than silently dropping it, and dropping clusters with a sensitive-flagged
-member into `manual_review` — those are never drafted. `assemble.py build`
+member into `manual_review` — those are never drafted. `memory-dream build`
 takes the plan plus a subagent's drafts and turns them into a **patch set**:
 it schema-validates every proposal, confines every destination path, retargets
 same-project inbound wikilinks to survivors, dry-run-audits every resulting
 file, and writes `manifest.json`, per-proposal diffs, `report.json`, and a
 `results/` directory of plain files — the patch-set directory is the *only*
 surface allowed to hold memory bodies outside live memory itself.
-`assemble.py archive` does a separate, fully deterministic operation: moving
+`memory-dream archive` does a separate, fully deterministic operation: moving
 settled index entries to a cold, never-auto-loaded file without touching any
 note body (see "Archive" below).
 
@@ -127,15 +131,7 @@ git-tracked mirror is already at least as fresh as live. Either way, this
 gate exists to catch the case an apply turns out to be wrong: something must
 already be true, before the write happens, that makes the change reversible.
 
-**Gate 4 — destination confinement.** Every proposal's destination path is
-checked before it is written: absolute paths, `..` traversal, symlink or
-junction escapes (`compat.is_escaping_link`), and direct writes to a
-project's index file are all rejected per proposal. This exists to catch a
-proposal — whether from a drafting bug or from something adversarial sitting
-in a note body — trying to write somewhere outside its own project's note
-directory.
-
-**Gate 5 — sensitive-skip and source-digest re-verification.** Two distinct
+**Gate 4 — sensitive-skip and source-digest re-verification.** Two distinct
 checks share one mechanism, "skip this whole proposal, apply the rest of the
 batch": a proposal touching a sensitive-flagged note is skipped whole, never
 partially applied, so a sensitive body can never leak through a half-applied
@@ -144,6 +140,14 @@ made is skipped too, because applying a draft against content that no longer
 exists there would silently discard someone else's newer edit. A vanished
 project downgrades its proposals to skipped the same way — the batch never
 aborts because one project disappeared.
+
+**Gate 5 — destination confinement.** Every proposal's destination path is
+checked before it is written: absolute paths, `..` traversal, symlink or
+junction escapes (`compat.is_escaping_link`), and direct writes to a
+project's index file are all rejected per proposal. This exists to catch a
+proposal — whether from a drafting bug or from something adversarial sitting
+in a note body — trying to write somewhere outside its own project's note
+directory.
 
 **Gate 6 — per-project stage-then-commit atomicity.** Every file for a
 project is staged to a temporary location first and only renamed into place
@@ -163,7 +167,7 @@ without re-parsing prose.
 
 ## The verification-coverage gate (build time)
 
-This gate runs earlier, inside `assemble.py build`, and it exists to enforce
+This gate runs earlier, inside `memory-dream build`, and it exists to enforce
 that Layer 3's verification stages actually ran — because an earlier,
 undocumented-only version of this pipeline shipped a patch set that skipped
 them (see PROVENANCE.md).
@@ -200,7 +204,7 @@ instead.
 
 ## Recovery
 
-**Snapshot mode (default).** `apply.py restore` reverses an applied patch
+**Snapshot mode (default).** `memory-dream restore` reverses an applied patch
 set from its own backup snapshot, per project, atomically. It refuses on a
 digest mismatch (something changed since the snapshot was taken) unless
 explicitly forced. Because Gate 6 makes apply itself per-project atomic and

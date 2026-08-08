@@ -80,24 +80,36 @@ def sensitive_note(rel: str, content: str) -> bool:
 def run_sample(args: argparse.Namespace) -> int:
     """Emit note bodies for the question-writer subagents: per project, the most
     recently modified substantial notes (recency is the best proxy for what a
-    future session will actually ask about)."""
+    future session will actually ask about).
+
+    The JSON sample goes to stdout; a per-project coverage summary (how many
+    notes were kept, and how many were dropped for being under ``--min-bytes``
+    or sensitive) goes to stderr, so a project silently contributing zero
+    notes is always visible rather than looking like it has no memory.
+    """
     live_root = Path(args.live_root).expanduser()
     live = AUDIT.project_dirs(live_root, live=True)
     notes: list[dict[str, Any]] = []
+    coverage: list[dict[str, Any]] = []
     for project in sorted(live):
         memory_dir = live[project]
         if memory_dir.is_symlink() or memory_dir.parent.is_symlink():
+            coverage.append({"project": project, "kept": 0, "too_small": 0, "sensitive": 0, "skipped": "symlinked"})
             continue
         records = AUDIT.scan_project_notes(memory_dir)
         ranked = sorted(records.items(), key=lambda item: -item[1]["mtime"])
         kept = 0
+        too_small = 0
+        sensitive = 0
         for rel, record in ranked:
             if kept >= args.per_project:
                 break
             if record["body_bytes"] < args.min_bytes:
+                too_small += 1
                 continue
             content = (memory_dir / rel).read_text(encoding="utf-8", errors="replace")
             if sensitive_note(rel, content):
+                sensitive += 1
                 continue
             body = record["body"]
             if len(body.encode("utf-8")) > BODY_SAMPLE_CAP:
@@ -112,7 +124,28 @@ def run_sample(args: argparse.Namespace) -> int:
                 }
             )
             kept += 1
+        coverage.append({"project": project, "kept": kept, "too_small": too_small, "sensitive": sensitive})
     print(json.dumps({"schema_version": SUITE_SCHEMA_VERSION, "notes": notes}, sort_keys=True))
+    # Coverage summary to stderr (never pollutes the machine-readable stdout).
+    total_kept = sum(c["kept"] for c in coverage)
+    print(
+        f"memory-dream eval sample: {total_kept} note(s) from {len(coverage)} project(s) "
+        f"(--min-bytes {args.min_bytes}, --per-project {args.per_project})",
+        file=sys.stderr,
+    )
+    for c in coverage:
+        if c["kept"] == 0:
+            reason = c.get("skipped") or (
+                f"all under --min-bytes ({c['too_small']} too small)" if c["too_small"] and not c["sensitive"]
+                else f"{c['too_small']} too small, {c['sensitive']} sensitive" if (c["too_small"] or c["sensitive"])
+                else "no notes"
+            )
+            print(f"  WARNING {c['project']}: 0 notes sampled — {reason}", file=sys.stderr)
+        elif c["too_small"] or c["sensitive"]:
+            print(
+                f"  {c['project']}: {c['kept']} kept, {c['too_small']} under --min-bytes, {c['sensitive']} sensitive",
+                file=sys.stderr,
+            )
     return 0
 
 
@@ -620,8 +653,15 @@ def add_parsers(subparsers) -> None:
     eval_sub = eval_parser.add_subparsers(dest="eval_command", required=True, metavar="<eval-command>")
 
     sample = eval_sub.add_parser("sample", help="emit note bodies for the question writers")
-    sample.add_argument("--per-project", type=int, default=8)
-    sample.add_argument("--min-bytes", type=int, default=500)
+    sample.add_argument(
+        "--per-project", type=int, default=8,
+        help="max notes sampled per project, most-recent first (default: 8)",
+    )
+    sample.add_argument(
+        "--min-bytes", type=int, default=500,
+        help="skip notes whose body is under this many bytes; a per-project drop "
+        "count is reported on stderr (default: 500, use 0 to include tiny notes)",
+    )
     sample.set_defaults(func=run_sample)
 
     freeze = eval_sub.add_parser("freeze", help="validate drafted questions and freeze the suite")

@@ -971,5 +971,210 @@ class SplitApplyTests(unittest.TestCase):
             self.assertNotIn("stale index hook", (live / "MEMORY.md").read_text())
 
 
+class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
+    """Regression coverage for the gates hardened after the adversarial review:
+    snapshot/restore path confinement, backup merge on a resumed apply,
+    fail-closed restore drift, and the archive loop's sensitive-note skip."""
+
+    def _statuses(self, harness):
+        manifest = json.loads((harness.patch_set / "apply-manifest.json").read_text())
+        return {s["id"]: s for entry in manifest["projects"] for s in entry["proposals"]}
+
+    def _restore(self, harness, *extra):
+        command = [
+            sys.executable, "-m", "memory_dream", "restore",
+            "--patch-set", str(harness.patch_set),
+            "--live-root", str(harness.live_root),
+            *extra,
+        ]
+        return subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=REPO_ROOT,
+            env=_clean_env(harness.claude_config_dir),
+        )
+
+    def _standard_project(self, harness, key="proj"):
+        live = harness.project(key)
+        (live / "MEMORY.md").write_text("- [Old](old.md)\n- [New](new.md)\n")
+        (live / "old.md").write_text(note("old", body="SUPERSEDED: see new."))
+        (live / "new.md").write_text(note("new", body="Current truth."))
+        harness.mirror_sync(key)
+        return live
+
+    def test_snapshot_never_copies_an_out_of_bounds_path(self):
+        # The snapshot copies files that already exist before the first live
+        # write, so a delete path escaping the project's memory dir would be a
+        # read-arbitrary-file-into-a-traversed-backup-path primitive running
+        # BEFORE the per-proposal apply gate. It must be dropped at snapshot; the
+        # escaping proposal is skipped path-escape and the rest of the batch still
+        # applies.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            live = self._standard_project(harness)
+            secret = harness.root / "outside_secret.md"
+            secret.write_text("SECRET-CONTENT\n")
+            harness.add_proposal({
+                "id": "p1", "project": "proj", "action": "period-close",
+                "sources": [{"path": "old.md", "digest": harness.digest("proj", "old.md")}],
+                "results": [], "deletes": ["old.md"],
+                "justification": "superseded", "sensitive": False,
+            })
+            harness.add_proposal({
+                "id": "escape", "project": "proj", "action": "period-close",
+                "sources": [], "results": [], "deletes": ["../../../outside_secret.md"],
+                "justification": "malicious", "sensitive": False,
+            })
+            harness.write()
+            result = harness.run(harness.selection(["p1", "escape"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            statuses = self._statuses(harness)
+            self.assertEqual(statuses["escape"]["reason"], "path-escape")
+            self.assertEqual(statuses["p1"]["status"], "applied")
+            # The outside file was neither deleted nor copied into the backup.
+            self.assertTrue(secret.is_file())
+            self.assertEqual(secret.read_text(), "SECRET-CONTENT\n")
+            backup_root = harness.patch_set / "backup"
+            for path in backup_root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn("SECRET-CONTENT", path.read_text(errors="replace"))
+            entries = json.loads((backup_root / "backup-manifest.json").read_text())["entries"]
+            self.assertTrue(all(".." not in entry["path"] for entry in entries))
+            self.assertFalse(any(entry["path"].endswith("outside_secret.md") for entry in entries))
+
+    def test_restore_refuses_out_of_bounds_backup_path(self):
+        # A hand-edited backup-manifest.json path that escapes the memory dir must
+        # be refused at restore (the backup dir has only POSIX-owner protection),
+        # never writing or deleting outside the project. Same gate the snapshot used.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            live = self._standard_project(harness)
+            original = (live / "new.md").read_text()
+            harness.add_proposal({
+                "id": "p1", "project": "proj", "action": "compress",
+                "sources": [{"path": "new.md", "digest": harness.digest("proj", "new.md")}],
+                "results": [{"path": "new.md", "content": note("new", body="V1 compressed")}],
+                "deletes": [], "justification": "compress", "sensitive": False,
+            })
+            harness.write()
+            self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
+            self.assertIn("V1 compressed", (live / "new.md").read_text())
+            bm_path = harness.patch_set / "backup" / "backup-manifest.json"
+            bm = json.loads(bm_path.read_text())
+            bm["entries"].append({"project": "proj", "path": "../../../evil.md", "sha256": "a" * 64})
+            bm_path.write_text(json.dumps(bm))
+            result = self._restore(harness)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("refusing out-of-bounds backup path", result.stderr)
+            self.assertFalse((harness.root / "evil.md").exists())
+            # The legitimate entry still restored new.md to its pre-apply bytes.
+            self.assertEqual((live / "new.md").read_text(), original)
+
+    def test_reapply_preserves_the_original_pre_first_apply_backup(self):
+        # A resumed second apply on the same patch set (a wider approval) MERGES
+        # into the existing backup; it must never overwrite a file's true
+        # pre-first-apply bytes with the now post-first-apply live copy. Snapshot
+        # mode so the live edit does not trip the mirror-freshness gate on pass 2.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            live = self._standard_project(harness)
+            (live / "extra.md").write_text(note("extra", body="Extra original"))
+            harness.mirror_sync("proj")
+            new_original = (live / "new.md").read_text()
+            extra_original = (live / "extra.md").read_text()
+            harness.add_proposal({
+                "id": "p1", "project": "proj", "action": "compress",
+                "sources": [{"path": "new.md", "digest": harness.digest("proj", "new.md")}],
+                "results": [{"path": "new.md", "content": note("new", body="V1 compressed")}],
+                "deletes": [], "justification": "compress", "sensitive": False,
+            })
+            harness.add_proposal({
+                "id": "p2", "project": "proj", "action": "compress",
+                "sources": [{"path": "extra.md", "digest": harness.digest("proj", "extra.md")}],
+                "results": [{"path": "extra.md", "content": note("extra", body="V2 compressed")}],
+                "deletes": [], "justification": "compress", "sensitive": False,
+            })
+            harness.write()
+            # Pass 1: approve only p1. The backup captures new.md at ORIGINAL bytes.
+            self.assertEqual(harness.run(harness.selection(["p1"]), mirror=False).returncode, 0)
+            backup_new = harness.patch_set / "backup" / "proj" / "new.md"
+            self.assertEqual(backup_new.read_text(), new_original)
+            self.assertIn("V1 compressed", (live / "new.md").read_text())
+            # Pass 2: approve p1 + p2. p1's source digest is now stale (skipped),
+            # p2 applies, and the merge must NOT re-copy the (now V1) live new.md
+            # over the original backup.
+            second = harness.run(harness.selection(["p1", "p2"]), mirror=False)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            statuses = self._statuses(harness)
+            self.assertEqual(statuses["p1"]["reason"], "source-changed-since-draft")
+            self.assertEqual(statuses["p2"]["status"], "applied")
+            self.assertEqual(backup_new.read_text(), new_original)  # preserved, not V1
+            entries = {
+                (entry["project"], entry["path"]): entry
+                for entry in json.loads((harness.patch_set / "backup" / "backup-manifest.json").read_text())["entries"]
+            }
+            self.assertEqual(
+                entries[("proj", "new.md")]["sha256"],
+                hashlib.sha256(new_original.encode()).hexdigest(),
+            )
+            # Restore reverses BOTH files to the pre-first-apply state.
+            self.assertEqual(self._restore(harness).returncode, 0)
+            self.assertEqual((live / "new.md").read_text(), new_original)
+            self.assertEqual((live / "extra.md").read_text(), extra_original)
+
+    def test_restore_fails_closed_when_apply_manifest_missing(self):
+        # If apply-manifest.json is gone (apply crashed after snapshot, or it was
+        # deleted), the drift check cannot run — restore must refuse without
+        # --force rather than silently overwrite unverifiable live content.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            live = self._standard_project(harness)
+            original = (live / "new.md").read_text()
+            harness.add_proposal({
+                "id": "p1", "project": "proj", "action": "compress",
+                "sources": [{"path": "new.md", "digest": harness.digest("proj", "new.md")}],
+                "results": [{"path": "new.md", "content": note("new", body="V1 compressed")}],
+                "deletes": [], "justification": "compress", "sensitive": False,
+            })
+            harness.write()
+            self.assertEqual(harness.run(harness.selection(["p1"])).returncode, 0)
+            (harness.patch_set / "apply-manifest.json").unlink()
+            refused = self._restore(harness)
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn("apply-manifest.json missing", refused.stderr)
+            self.assertIn("--force", refused.stderr)
+            self.assertIn("V1 compressed", (live / "new.md").read_text())  # not restored
+            forced = self._restore(harness, "--force")
+            self.assertEqual(forced.returncode, 0, forced.stderr)
+            self.assertIn("proceeding over drift", forced.stderr)
+            self.assertEqual((live / "new.md").read_text(), original)
+
+    def test_sensitive_archive_proposal_is_skipped(self):
+        # The archive loop runs before the generic loop; a sensitive archive
+        # proposal must not move entries into the (still-readable) archive index.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            live = harness.project()
+            (live / "old.md").write_text(note("old"))
+            (live / "MEMORY.md").write_text("# Index\n- [old](old.md) — resolved 2026-06-01 thing\n")
+            harness.mirror_sync()
+            entry = "- [old](old.md) — resolved 2026-06-01 thing"
+            harness.add_proposal({
+                "id": "a1", "project": "proj", "action": "archive",
+                "justification": "demote cold entry",
+                "sources": [{"path": "MEMORY.md", "digest": harness.digest("proj", "MEMORY.md")}],
+                "results": [], "deletes": [], "archive_entries": [entry],
+                "sensitive": True, "survivor": None,
+            })
+            harness.write()
+            result = harness.run(harness.selection(["a1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self._statuses(harness)["a1"]["reason"], "sensitive")
+            self.assertFalse((live / "MEMORY-archive.md").exists())
+            self.assertIn(entry, (live / "MEMORY.md").read_text())  # index untouched
+
+
 if __name__ == "__main__":
     unittest.main()

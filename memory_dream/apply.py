@@ -123,25 +123,58 @@ def confined_dest(memory_dir: Path, rel: str) -> Path | None:
     return AUDIT.confined_path(memory_dir, rel)
 
 
+# The two index files a snapshot/restore legitimately touches that
+# `confined_path` rejects by design (it refuses MEMORY.md as a single-writer
+# destination and refuses any non-.md name). They are added by this module's
+# own code as bare literals, never sourced from proposal or manifest data.
+INDEX_SNAPSHOT_FILES = frozenset({"MEMORY.md", "MEMORY-archive.md"})
+
+
+def confined_snapshot_path(base_dir: Path, rel: str) -> Path | None:
+    """Confine a snapshot/restore target inside ``base_dir``, or None on escape.
+
+    The snapshot backup and restore both touch the two index files that
+    `confined_path` refuses (MEMORY.md, MEMORY-archive.md); allow exactly
+    those two bare literals and confine everything else through the shared
+    note-destination check. This is the single gate every snapshot read,
+    backup write, and restore write/delete passes through, so a path from a
+    proposal's ``results``/``deletes`` or a hand-edited ``backup-manifest.json``
+    can never escape the project's memory directory.
+    """
+    if rel in INDEX_SNAPSHOT_FILES:
+        return base_dir / rel  # bare filename, no separator/traversal: safe by construction
+    return AUDIT.confined_path(base_dir, rel)
+
+
 # --- Snapshot backup ----------------------------------------------------------
 
 
-def _snapshot_targets(by_project: dict[str, list[dict[str, Any]]], present: list[str]) -> dict[str, set[str]]:
+def _snapshot_targets(
+    live: dict[str, Path], by_project: dict[str, list[dict[str, Any]]], present: list[str]
+) -> dict[str, set[str]]:
     """Every relative path an approved, present-project proposal declares as a
-    result or delete, plus ``MEMORY.md`` (every committed project gets an
-    index refresh/reconciliation) and ``MEMORY-archive.md`` for any archive
-    proposal (always appended to or created).
+    result or delete AND that confines inside the project's memory dir, plus
+    ``MEMORY.md`` (every committed project gets an index
+    refresh/reconciliation) and ``MEMORY-archive.md`` for any archive proposal
+    (always appended to or created).
 
-    Deliberately over-inclusive: a proposal a later validation gate skips
-    still gets backed up harmlessly. It does NOT cover a file a later gate
-    rewrites only as an emergent side effect rather than a declared result —
-    concretely, inbound-wikilink retargeting of a bystander note that is not
-    itself a proposal's source or result. Restoring after such a retarget
-    will leave that bystander's rewritten links in place; see restore()'s
-    docstring.
+    A path that escapes confinement is dropped here (it would be skipped at
+    apply anyway) rather than backed up: copying it would read an arbitrary
+    file and write it under a traversed backup path — a path-traversal
+    primitive that runs before the per-proposal apply gate. Confinement is
+    therefore the FIRST thing that touches a proposal-declared path.
+
+    Otherwise deliberately over-inclusive: a proposal a later validation gate
+    skips (sensitive, source-changed) still gets backed up harmlessly. It does
+    NOT cover a file a later gate rewrites only as an emergent side effect
+    rather than a declared result — concretely, inbound-wikilink retargeting
+    of a bystander note that is not itself a proposal's source or result.
+    Restoring after such a retarget will leave that bystander's rewritten
+    links in place; see restore()'s docstring.
     """
     targets: dict[str, set[str]] = {}
     for project in present:
+        memory_dir = live[project]
         rels = {"MEMORY.md"}
         for proposal in by_project.get(project, []):
             if proposal.get("action") == "archive":
@@ -149,10 +182,10 @@ def _snapshot_targets(by_project: dict[str, list[dict[str, Any]]], present: list
                 continue
             for result in proposal.get("results") or []:
                 path = result.get("path") if isinstance(result, dict) else None
-                if isinstance(path, str):
+                if isinstance(path, str) and confined_snapshot_path(memory_dir, path) is not None:
                     rels.add(path)
             for path in proposal.get("deletes") or []:
-                if isinstance(path, str):
+                if isinstance(path, str) and confined_snapshot_path(memory_dir, path) is not None:
                     rels.add(path)
         targets[project] = rels
     return targets
@@ -170,28 +203,60 @@ def snapshot_patch_set(
     (this apply will CREATE it) is recorded with ``sha256: null`` so restore
     knows to delete it rather than restore bytes.
 
+    Resumable-safe: re-running apply on the same patch set (applying a wider
+    approval set on a second pass) MERGES into any existing backup rather than
+    overwriting it. A ``(project, path)`` already captured by an earlier run
+    holds the TRUE pre-first-apply bytes; it is never re-copied or re-hashed
+    from the now post-first-apply live file, so `restore` always reverses to
+    the state before the very first apply of this patch set.
+
+    Every source read and backup write is confined to the project's memory
+    dir via `confined_snapshot_path`; `_snapshot_targets` already drops
+    escaping paths, and this is the second, at-the-write gate.
+
     Returns None on success, or an error message on failure. The caller must
     abort the whole apply on failure — no project has been written to yet.
     """
     backup_root = patch_set / "backup"
-    targets = _snapshot_targets(by_project, present)
-    manifest_entries: list[dict[str, Any]] = []
+    manifest_path = backup_root / "backup-manifest.json"
+    # Preserve any earlier run's entries verbatim: they record the true
+    # pre-apply state and must survive a resumed, wider second pass.
+    prior_entries: list[dict[str, Any]] = []
+    already: set[tuple[str, str]] = set()
+    if manifest_path.is_file():
+        try:
+            prior = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            return f"snapshot failed, existing backup manifest unreadable: {error}"
+        for entry in prior.get("entries", []) if isinstance(prior, dict) else []:
+            if isinstance(entry, dict) and isinstance(entry.get("project"), str) and isinstance(entry.get("path"), str):
+                prior_entries.append(entry)
+                already.add((entry["project"], entry["path"]))
+    targets = _snapshot_targets(live, by_project, present)
+    manifest_entries: list[dict[str, Any]] = list(prior_entries)
     try:
         for project in present:
             memory_dir = live[project]
             dest_dir = backup_root / project
             for rel in sorted(targets[project]):
-                src = memory_dir / rel
+                if (project, rel) in already:
+                    continue  # already captured at its true pre-apply state by an earlier run
+                src = confined_snapshot_path(memory_dir, rel)
+                if src is None:
+                    continue  # escaping path (defense-in-depth; _snapshot_targets already dropped it)
                 if src.is_file():
                     dest = dest_dir / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(src.read_bytes())
-                    manifest_entries.append({"project": project, "path": rel, "sha256": AUDIT.digest(src)})
+                    # A backup file already on disk (manifest lost to a crash) is the
+                    # earlier run's original; keep it, and hash what is actually stored.
+                    if not dest.exists():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(src.read_bytes())
+                    manifest_entries.append({"project": project, "path": rel, "sha256": AUDIT.digest(dest)})
                 else:
                     manifest_entries.append({"project": project, "path": rel, "sha256": None})
         backup_root.mkdir(parents=True, exist_ok=True)
         compat.restrict_permissions(backup_root)
-        (backup_root / "backup-manifest.json").write_text(
+        manifest_path.write_text(
             json.dumps(
                 {"schema_version": APPLY_SCHEMA_VERSION, "entries": manifest_entries}, indent=2, sort_keys=True
             )
@@ -310,6 +375,12 @@ def apply_project(
     proposals = [p for p in proposals if p.get("action") != "archive"]
     for proposal in archive_proposals:
         pid = proposal.get("id", "?")
+        # Same sensitive-skip gate the generic loop applies below: an archive
+        # proposal flagged sensitive by any manifest producer must not move its
+        # entries into the (still readable) MEMORY-archive.md.
+        if proposal.get("sensitive"):
+            statuses.append({"id": pid, "status": "skipped", "reason": "sensitive"})
+            continue
         entries = proposal.get("archive_entries") or []
         sources = proposal.get("sources") or []
         if not (isinstance(entries, list) and entries and all(isinstance(e, str) for e in entries)
@@ -743,6 +814,11 @@ def _expected_post_apply_digests(patch_set: Path) -> dict[tuple[str, str], str]:
     proposal content anywhere in the patch set, so no expected digest exists
     for them; the drift check in `run_restore` simply skips paths this
     returns nothing for rather than guessing.
+
+    Returns ``{}`` when either manifest is missing or unparseable — the
+    map cannot be built at all. `run_restore` treats a missing manifest as a
+    fail-closed drift condition (requires ``--force``) rather than reading an
+    empty map as "no drift"; do not rely on ``{}`` alone to gate restore.
     """
     manifest_path = patch_set / "manifest.json"
     apply_manifest_path = patch_set / "apply-manifest.json"
@@ -821,8 +897,19 @@ def _run_restore_locked(args: argparse.Namespace, patch_set: Path, backup_root: 
 
     # Drift check: compare each live file this apply is on record as having
     # written against its current bytes, where a recorded expectation exists.
+    # If apply-manifest.json is absent (apply crashed after snapshot, or it was
+    # deleted), the drift check cannot run at all — fail CLOSED, requiring
+    # --force, rather than silently restoring (and deleting apply-created files)
+    # over live content we cannot verify.
     expected = _expected_post_apply_digests(patch_set)
     drift: list[str] = []
+    missing_manifests = [
+        name for name in ("manifest.json", "apply-manifest.json") if not (patch_set / name).is_file()
+    ]
+    if missing_manifests:
+        drift.append(
+            f"{', '.join(missing_manifests)} missing: cannot verify live memory still matches what this apply wrote"
+        )
     for project, project_entries in sorted(by_project.items()):
         memory_dir = live_root / project / "memory"
         for entry in project_entries:
@@ -858,13 +945,23 @@ def _run_restore_locked(args: argparse.Namespace, patch_set: Path, backup_root: 
         for entry in project_entries:
             rel = entry["path"]
             sha256 = entry.get("sha256")
-            dest = memory_dir / rel
+            # Confine every path from backup-manifest.json (which lives in a
+            # POSIX-owner-only dir with no stronger access control): a
+            # hand-edited or bug-produced ``path`` must never write or delete
+            # outside the project's memory dir. Same gate the snapshot used.
+            dest = confined_snapshot_path(memory_dir, rel)
+            if dest is None:
+                print(
+                    f"memory-dream restore: WARNING refusing out-of-bounds backup path {project}/{rel}; skipping",
+                    file=sys.stderr,
+                )
+                continue
             if sha256 is None:
                 # Did not exist before this apply: restoring means removing it.
                 deletes.append(dest)
                 continue
-            backup_file = backup_root / project / rel
-            if not backup_file.is_file():
+            backup_file = confined_snapshot_path(backup_root / project, rel)
+            if backup_file is None or not backup_file.is_file():
                 print(
                     f"memory-dream restore: WARNING backup copy missing for {project}/{rel}; cannot restore this file",
                     file=sys.stderr,

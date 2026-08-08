@@ -70,11 +70,15 @@ MIRROR_PUSH_HINT = "sync your mirror, then retry"
 _ENV_PREFIX = "MEMORY_DREAM_"
 _FILE_CONFIG_LOADED = False
 
-# Threshold names the JSON config file / env may override.
+# Threshold names the JSON config file / env may override. Leading-underscore
+# module state (``_ENV_PREFIX``, ``_FILE_CONFIG_LOADED``) is excluded: str.isupper()
+# ignores non-cased characters, so those names pass an ``.isupper()`` filter and
+# would otherwise become override-able config keys — letting a config file mutate
+# ``_ENV_PREFIX`` mid-load and silently break the env-beats-file precedence.
 _OVERRIDABLE = {
     name
     for name, value in list(globals().items())
-    if name.isupper() and isinstance(value, (int, float, str, list))
+    if name.isupper() and not name.startswith("_") and not isinstance(value, bool) and isinstance(value, (int, float, str, list))
 }
 
 
