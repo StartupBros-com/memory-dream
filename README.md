@@ -1,5 +1,7 @@
 # memory-dream
 
+[![CI](https://github.com/StartupBros-com/memory-dream/actions/workflows/test.yml/badge.svg)](https://github.com/StartupBros-com/memory-dream/actions/workflows/test.yml)
+
 **The sleep cycle for Claude Code auto-memory.** Your agent writes notes every session and never cleans them up. memory-dream is the consolidation pass that was missing: it finds the rot deterministically, drafts fixes with a subagent that cannot touch your files, shows you a diff for every single change, and applies only what you approve. Then it measures whether recall actually got better.
 
 Plenty of tooling captures memories. Nothing consolidates them. That is the gap this fills.

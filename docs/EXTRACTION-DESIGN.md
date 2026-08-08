@@ -1,9 +1,9 @@
 # memory-dream: OSS extraction design (v0.1.0)
 
 Target: a community-grade Claude Code plugin on the hov marketplace, extracted
-from a personal harness. Source of record for the port: the coupling audit in
-dotfiles issue #111 (50 findings, 19 blocking) plus per-file coupling maps
-generated 2026-08-08.
+from a personal harness. Source of record for the port: a pre-extraction
+coupling audit of the source harness (50 findings, 19 blocking) plus per-file
+coupling maps generated 2026-08-08.
 
 ## What this is
 
@@ -67,7 +67,8 @@ Shared rules for every ported module:
   at import time is not.
 - Every path and threshold comes from `config.py`. No `Path(__file__)`-relative
   data-directory derivation anywhere (the old grandparent mirror default
-  silently repointed under worktrees — dotfiles pass 9 incident).
+  silently repointed under worktrees — a real incident from the authors'
+  consolidation campaign; see docs/PROVENANCE.md).
 - No personal references: see "Sanitization contract" below.
 - Keep the machine-parseable output contracts: the trailing `flagged:N` triage
   line and the `DREAM-APPLY-COMPLETE ...` completion line are documented API.
@@ -91,7 +92,7 @@ Shared rules for every ported module:
 ### assemble.py (from memory-dream-assemble.py, 1420 lines)
 - Subcommands preserved: `plan`, `build`, `archive`, `trace`.
 - `trace` moves its transcript parsing to `transcript.py` (shared with apply).
-- Scratch defaults (`$CLAUDE_JOB_DIR/tmp`) → `config.scratch_dir()`.
+- Scratch defaults (previously a session-scoped temp dir) → `config.scratch_dir()`.
 - Patch-set root default: `~/.claude/logs/memory-dream/passes/` (respecting
   `CLAUDE_CONFIG_DIR`), overridable.
 - `os.chmod(0o700)` via `compat.restrict_permissions` (no-op on Windows, keeps
@@ -109,7 +110,7 @@ Shared rules for every ported module:
   - Mirror mode (mirror root configured): today's per-project freshness gate,
     verbatim behavior. Remediation message names the user's own configured
     sync command (config `mirror_push_hint`, default text "sync your mirror"),
-    never `sync.sh memory-push`.
+    never a hard-coded personal script name.
 - **Consent modes** (the trace-coupling fix, gate 2):
   - `--consent trace` (default): today's post-preview transcript-turn
     verification via `transcript.py`.
@@ -121,8 +122,8 @@ Shared rules for every ported module:
     silent breakage.
 - `fcntl` single-flight lock via `compat.FileLock` (fcntl on POSIX,
   msvcrt.locking on Windows).
-- The completion line keeps its shape; `next=memory-push` becomes
-  `next=<config mirror_push_hint or "none">`.
+- The completion line keeps its shape; the old hard-coded `next=` sync hint
+  becomes `next=<config mirror_push_hint or "none">`.
 
 ### recall_eval.py (from memory-recall-eval.py, 635 lines)
 - Subcommands preserved: `sample`, `freeze`, `routing-input`, `score`,
@@ -169,12 +170,12 @@ Shared rules for every ported module:
 
 ## Commands and agents (markdown ports)
 
-- `commands/dream.md` from `skills-local/memory-dream/SKILL.md` (615 lines).
+- `commands/dream.md` from the source harness's memory-dream skill (615 lines).
   `disable-model-invocation: true`, `argument-hint` kept. Every script call
   becomes `python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" …`. Drafters
-  dispatch `subagent_type: memory-dream:drafter`. The sync.sh/mirror section
-  becomes a "Record" step with two documented modes (snapshot default / mirror
-  optional). The memory-mine staleness preflight becomes a generic conditional
+  dispatch `subagent_type: memory-dream:drafter`. The personal mirror-sync
+  section becomes a "Record" step with two documented modes (snapshot default /
+  mirror optional). The capture-pipeline staleness preflight becomes a generic conditional
   ("if you run a capture pipeline, check its freshness first") with no script
   call. Step 0 baseline points at `/memory-dream:eval`. The preview-open shell
   block is replaced by `cli.py open-preview`. Transcript location uses
@@ -182,7 +183,7 @@ Shared rules for every ported module:
   replaced by gate names (below). Private PR numbers, pass labels, and project
   codenames removed; dated lessons keep their dates, attributed to "the
   authors' consolidation campaign" (see docs/PROVENANCE.md).
-- `commands/eval.md` from `skills-local/memory-eval/SKILL.md` (184 lines):
+- `commands/eval.md` from the source harness's memory-eval skill (184 lines):
   same treatment; scribe dispatch `subagent_type: memory-dream:scribe`; all
   artifact paths via config defaults, shown as commands.
 - `agents/drafter.md` from `memory-dream-drafter.md`: content essentially
@@ -215,12 +216,11 @@ GLOSSARY note lives in ARCHITECTURE.md; the public docs use only the names.
 ## Sanitization contract (CI-enforced)
 
 `scripts/check_no_private_refs.py` fails CI if any shipped file (everything
-except `docs/EXTRACTION-DESIGN.md`) matches:
-`/home/will`, `~/dotfiles`, `dotfiles`, `sync.sh`, `memory-push`,
-`wsl-cdp|prbot|pi-evals|arena|startupbros-com/hov` (codenames),
-`\bR1?[0-9]\b` in gate context (shorthand), `harness-weekly`, `CLAUDE_JOB_DIR`
-(allowed only in config.py scratch resolution + its docs), private PR/issue
-refs (`#\d+` outside CHANGELOG context), `memory-mine`.
+except that script itself and `docs/EXTRACTION-DESIGN.md`) matches its pattern
+list: personal filesystem paths, source-harness repo and project codenames,
+personal sync-script and workflow names, gate-number shorthand in gate context,
+and private PR/issue references. The authoritative pattern list lives in the
+script, next to the guard tests that pin it.
 Personal dates on measured lessons are kept deliberately; they are provenance.
 
 ## Tests
