@@ -52,17 +52,26 @@ class TranscriptSchemaError(RuntimeError):
     """
 
 
+def cwd_slug(cwd: Path) -> str:
+    """The project slug Claude Code derives from a working directory.
+
+    Reverse-engineered: every path separator and ``.`` becomes ``-``. Windows
+    drive colons and backslashes are replaced too — the slug must always stay
+    a single relative path component, never an absolute path that would make
+    ``projects / slug`` escape the config directory.
+    """
+    return "".join("-" if ch in "/.\\:" else ch for ch in str(cwd))
+
+
 def transcripts_dir_for(cwd: Path) -> Path:
     """The per-project transcript directory Claude Code derives from a cwd.
 
-    Reverse-engineered: Claude Code slugs a working directory by replacing
-    every ``/`` and ``.`` with ``-`` and stores that project's session
-    transcripts under ``<claude-config-dir>/projects/<slug>/``. This is not a
-    documented API and can change between Claude Code releases; that is what
-    `schema_probe` and `doctor`'s consent-trace check are for.
+    Reverse-engineered via `cwd_slug`: session transcripts live under
+    ``<claude-config-dir>/projects/<slug>/``. This is not a documented API and
+    can change between Claude Code releases; that is what `schema_probe` and
+    `doctor`'s consent-trace check are for.
     """
-    slug = "".join("-" if ch in "/." else ch for ch in str(cwd))
-    return config.claude_config_dir() / "projects" / slug
+    return config.claude_config_dir() / "projects" / cwd_slug(cwd)
 
 
 def schema_probe(transcripts_dir: Path) -> str:

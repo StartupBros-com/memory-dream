@@ -57,7 +57,7 @@ def run_cli(*args: str, cwd: Path = REPO_ROOT, env: dict, check: bool = False) -
 class TraceTests(unittest.TestCase):
     def _transcript(self, root, *entries):
         path = root / "sess.jsonl"
-        path.write_text("\n".join(json.dumps(entry) for entry in entries))
+        path.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8", newline="\n")
         return path
 
     def test_trace_finds_latest_post_preview_turn(self):

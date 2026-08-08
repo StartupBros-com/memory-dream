@@ -89,9 +89,9 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text("- [Note](note.md)\n- [Legacy](legacy.md)\n")
-            (live / "note.md").write_text(note())
-            (live / "legacy.md").write_text(note("legacy", nested=False))
+            (live / "MEMORY.md").write_text("- [Note](note.md)\n- [Legacy](legacy.md)\n", encoding="utf-8", newline="\n")
+            (live / "note.md").write_text(note(), encoding="utf-8", newline="\n")
+            (live / "legacy.md").write_text(note("legacy", nested=False), encoding="utf-8", newline="\n")
             for path in live.iterdir():
                 (mirror / path.name).write_bytes(path.read_bytes())
             first = self.run_audit(fixture)
@@ -105,21 +105,19 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text(
-                "- [Escaped](space\\(copy\\).md)\n"
-                "- [Missing](gone.md)\n"
-                "- [Outside](../outside.md)\n"
-            )
-            (live / "space(copy).md").write_text(note("escaped"))
-            (live / "unindexed.md").write_text(note("unindexed"))
-            (live / "attachment.txt").write_text("live attachment\n")
-            (mirror / "MEMORY.md").write_text("old\n")
-            (mirror / "orphan.md").write_text(note("orphan"))
-            (mirror / "mirror-only.txt").write_text("mirror attachment\n")
-            fixture.project("missing-mirror", mirror=False)[0].joinpath("MEMORY.md").write_text("")
+            (live / "MEMORY.md").write_text("- [Escaped](space\\(copy\\).md)\n"
+            "- [Missing](gone.md)\n"
+            "- [Outside](../outside.md)\n", encoding="utf-8", newline="\n")
+            (live / "space(copy).md").write_text(note("escaped"), encoding="utf-8", newline="\n")
+            (live / "unindexed.md").write_text(note("unindexed"), encoding="utf-8", newline="\n")
+            (live / "attachment.txt").write_text("live attachment\n", encoding="utf-8", newline="\n")
+            (mirror / "MEMORY.md").write_text("old\n", encoding="utf-8", newline="\n")
+            (mirror / "orphan.md").write_text(note("orphan"), encoding="utf-8", newline="\n")
+            (mirror / "mirror-only.txt").write_text("mirror attachment\n", encoding="utf-8", newline="\n")
+            fixture.project("missing-mirror", mirror=False)[0].joinpath("MEMORY.md").write_text("", encoding="utf-8", newline="\n")
             orphan_project = fixture.mirror / "mirror-only"
             orphan_project.mkdir()
-            (orphan_project / "MEMORY.md").write_text("")
+            (orphan_project / "MEMORY.md").write_text("", encoding="utf-8", newline="\n")
 
             result = self.run_audit(fixture)
             kinds = [item["kind"] for item in json.loads(result.stdout)["findings"]]
@@ -150,15 +148,11 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("[A](a.md) [B](b.md) [Bad](bad.md) [Secret](api-key.md)\n")
-            (live / "a.md").write_text(
-                note("same", extra="status: 2025-01-01\n", body="Body date: 2025-01-01")
-            )
-            (live / "b.md").write_text(note("same", extra="  api_token: redacted-fixture-value\n"))
-            (live / "bad.md").write_text("---\nname: bad\nmetadata:\n  type: wrong\n---\nbody\n")
-            (live / "api-key.md").write_text(
-                note("sensitive", body="api_key=highsignalsignaturevalue123456789")
-            )
+            (live / "MEMORY.md").write_text("[A](a.md) [B](b.md) [Bad](bad.md) [Secret](api-key.md)\n", encoding="utf-8", newline="\n")
+            (live / "a.md").write_text(note("same", extra="status: 2025-01-01\n", body="Body date: 2025-01-01"), encoding="utf-8", newline="\n")
+            (live / "b.md").write_text(note("same", extra="  api_token: redacted-fixture-value\n"), encoding="utf-8", newline="\n")
+            (live / "bad.md").write_text("---\nname: bad\nmetadata:\n  type: wrong\n---\nbody\n", encoding="utf-8", newline="\n")
+            (live / "api-key.md").write_text(note("sensitive", body="api_key=highsignalsignaturevalue123456789"), encoding="utf-8", newline="\n")
             result = self.run_audit(fixture, "--as-of", "2025-05-01", "--scan-content")
             payload = json.loads(result.stdout)
             kinds = [item["kind"] for item in payload["findings"]]
@@ -178,8 +172,8 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text("[Token eater](project_token_eater.md)\n")
-            (live / "project_token_eater.md").write_text(note("token-eater"))
+            (live / "MEMORY.md").write_text("[Token eater](project_token_eater.md)\n", encoding="utf-8", newline="\n")
+            (live / "project_token_eater.md").write_text(note("token-eater"), encoding="utf-8", newline="\n")
             for path in live.iterdir():
                 (mirror / path.name).write_bytes(path.read_bytes())
 
@@ -190,23 +184,17 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text("[T](truncated.md) [F](fine.md)\n")
-            (live / "truncated.md").write_text(
-                "---\nname: truncated\ndescription: shipped as PR\nmetadata:\n  type: project\n---\nBody.\n"
-            )
-            (live / "fine.md").write_text(
-                '---\nname: fine\ndescription: "Delivered patch #7 and merged."\nmetadata:\n  type: project\n---\nBody.\n'
-            )
+            (live / "MEMORY.md").write_text("[T](truncated.md) [F](fine.md)\n", encoding="utf-8", newline="\n")
+            (live / "truncated.md").write_text("---\nname: truncated\ndescription: shipped as PR\nmetadata:\n  type: project\n---\nBody.\n", encoding="utf-8", newline="\n")
+            (live / "fine.md").write_text('---\nname: fine\ndescription: "Delivered patch #7 and merged."\nmetadata:\n  type: project\n---\nBody.\n', encoding="utf-8", newline="\n")
             for name, desc in (
                 ("caps", "keeps payload-logging ON"),
                 ("flag", "never use git add -A"),
                 ("path", "transcripts live in temp/meeting-transcripts/"),
             ):
-                (live / f"{name}.md").write_text(
-                    f"---\nname: {name}\ndescription: {desc}\nmetadata:\n  type: project\n---\nBody.\n"
-                )
+                (live / f"{name}.md").write_text(f"---\nname: {name}\ndescription: {desc}\nmetadata:\n  type: project\n---\nBody.\n", encoding="utf-8", newline="\n")
             index_lines = "".join(f"[{n}]({n}.md) " for n in ("truncated", "fine", "caps", "flag", "path"))
-            (live / "MEMORY.md").write_text(index_lines + "\n")
+            (live / "MEMORY.md").write_text(index_lines + "\n", encoding="utf-8", newline="\n")
             for path in live.iterdir():
                 (mirror / path.name).write_bytes(path.read_bytes())
             result = self.run_audit(fixture)
@@ -222,11 +210,9 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text(
-                "[N](note.md)\napi_key=indexleakhighsignalvalue1234567890\n"
-            )
-            (live / "note.md").write_text(note())
-            (live / "attachment.txt").write_text("ghp_" + "a" * 20 + "\n")
+            (live / "MEMORY.md").write_text("[N](note.md)\napi_key=indexleakhighsignalvalue1234567890\n", encoding="utf-8", newline="\n")
+            (live / "note.md").write_text(note(), encoding="utf-8", newline="\n")
+            (live / "attachment.txt").write_text("ghp_" + "a" * 20 + "\n", encoding="utf-8", newline="\n")
             result = self.run_audit(fixture)
             findings = json.loads(result.stdout)["findings"]
             flagged = {f["path"] for f in findings if f["kind"] == "sensitive_content_indicator"}
@@ -240,10 +226,8 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("[N](nullname.md)\n")
-            (live / "nullname.md").write_text(
-                "---\nname: null\ndescription: false\nmetadata:\n  type: project\n---\nBody.\n"
-            )
+            (live / "MEMORY.md").write_text("[N](nullname.md)\n", encoding="utf-8", newline="\n")
+            (live / "nullname.md").write_text("---\nname: null\ndescription: false\nmetadata:\n  type: project\n---\nBody.\n", encoding="utf-8", newline="\n")
             result = self.run_audit(fixture)
             findings = json.loads(result.stdout)["findings"]
             problems = [
@@ -256,11 +240,9 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("[A](project_alpha_note.md) [B](project_beta.md)\n")
-            (live / "project_alpha_note.md").write_text(note("alpha"))
-            (live / "project_beta.md").write_text(
-                note("beta", body="See [[alpha-note]] and [[totally-unknown-forward-ref]].")
-            )
+            (live / "MEMORY.md").write_text("[A](project_alpha_note.md) [B](project_beta.md)\n", encoding="utf-8", newline="\n")
+            (live / "project_alpha_note.md").write_text(note("alpha"), encoding="utf-8", newline="\n")
+            (live / "project_beta.md").write_text(note("beta", body="See [[alpha-note]] and [[totally-unknown-forward-ref]]."), encoding="utf-8", newline="\n")
             result = self.run_audit(fixture)
             findings = json.loads(result.stdout)["findings"]
             typos = [f for f in findings if f["kind"] == "wikilink_typo"]
@@ -273,7 +255,7 @@ class MemoryAuditTests(unittest.TestCase):
             fixture = Fixture(Path(temp))
             outside = Path(temp) / "outside"
             outside.mkdir()
-            (outside / "MEMORY.md").write_text("")
+            (outside / "MEMORY.md").write_text("", encoding="utf-8", newline="\n")
             project_parent = fixture.live / "linked"
             project_parent.mkdir()
             (project_parent / "memory").symlink_to(outside)
@@ -289,9 +271,9 @@ class MemoryAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project("missing", mirror=False)
-            (live / "note.md").write_text(note())
+            (live / "note.md").write_text(note(), encoding="utf-8", newline="\n")
             large, _ = fixture.project("large", mirror=False)
-            (large / "MEMORY.md").write_text("one\ntwo\n")
+            (large / "MEMORY.md").write_text("one\ntwo\n", encoding="utf-8", newline="\n")
             result = self.run_audit(fixture, "--max-index-lines", "1")
             kinds = [item["kind"] for item in json.loads(result.stdout)["findings"]]
             self.assertIn("missing_memory_index", kinds)
@@ -316,11 +298,9 @@ class MemoryTriageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [S](stacked.md)\n- [L](lognote.md)\n")
-            (live / "stacked.md").write_text(
-                note("stacked", body="SUPERSEDED 2025-01: a.\nCORRECTED 2025-02: b.\nRESOLVED 2025-03: c.")
-            )
-            (live / "lognote.md").write_text(note("lognote", body="x" * 6500))
+            (live / "MEMORY.md").write_text("- [S](stacked.md)\n- [L](lognote.md)\n", encoding="utf-8", newline="\n")
+            (live / "stacked.md").write_text(note("stacked", body="SUPERSEDED 2025-01: a.\nCORRECTED 2025-02: b.\nRESOLVED 2025-03: c."), encoding="utf-8", newline="\n")
+            (live / "lognote.md").write_text(note("lognote", body="x" * 6500), encoding="utf-8", newline="\n")
             result = self.run_triage(fixture)
             self.assertEqual(result.returncode, 0)
             payload = json.loads(result.stdout)
@@ -335,9 +315,9 @@ class MemoryTriageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [A](alpha.md)\n- [B](beta.md)\n")
-            (live / "alpha.md").write_text(note("alpha", body="Short durable fact."))
-            (live / "beta.md").write_text(note("beta", body="See [[alpha]] for context."))
+            (live / "MEMORY.md").write_text("- [A](alpha.md)\n- [B](beta.md)\n", encoding="utf-8", newline="\n")
+            (live / "alpha.md").write_text(note("alpha", body="Short durable fact."), encoding="utf-8", newline="\n")
+            (live / "beta.md").write_text(note("beta", body="See [[alpha]] for context."), encoding="utf-8", newline="\n")
             result = self.run_triage(fixture)
             payload = json.loads(result.stdout)
             self.assertEqual(payload["summary"]["flagged"], 0)
@@ -347,10 +327,10 @@ class MemoryTriageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             empty, _ = fixture.project("empty", mirror=False)
-            (empty / "MEMORY.md").write_text("")
+            (empty / "MEMORY.md").write_text("", encoding="utf-8", newline="\n")
             single, _ = fixture.project("single", mirror=False)
-            (single / "MEMORY.md").write_text("- [Only](only.md)\n")
-            (single / "only.md").write_text(note("only", body="One small durable fact."))
+            (single / "MEMORY.md").write_text("- [Only](only.md)\n", encoding="utf-8", newline="\n")
+            (single / "only.md").write_text(note("only", body="One small durable fact."), encoding="utf-8", newline="\n")
             result = self.run_triage(fixture)
             self.assertEqual(result.returncode, 0)
             payload = json.loads(result.stdout)
@@ -360,13 +340,13 @@ class MemoryTriageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text("- [Old](old.md)\n")
+            (live / "MEMORY.md").write_text("- [Old](old.md)\n", encoding="utf-8", newline="\n")
             # Oversized so it flags structurally; the point of the test is that its
             # reported age comes from live mtime, never mirror state.
-            (live / "old.md").write_text(note("old", body="A" * 6500))
+            (live / "old.md").write_text(note("old", body="A" * 6500), encoding="utf-8", newline="\n")
             # Mirror copy diverges (a mirror_stale_file condition), but triage age
             # must come from the live file's mtime regardless of any mirror state.
-            (mirror / "old.md").write_text(note("old", body="Different stale mirror content."))
+            (mirror / "old.md").write_text(note("old", body="Different stale mirror content."), encoding="utf-8", newline="\n")
             old_ts = time.mktime(dt.date(2026, 1, 1).timetuple())
             os.utime(live / "old.md", (old_ts, old_ts))
             result = self.run_triage(fixture, "--now", "2026-07-17")
@@ -383,8 +363,8 @@ class MemoryTriageTests(unittest.TestCase):
             fixture = Fixture(Path(temp))
             for key in ("bravo", "alpha"):
                 live, _ = fixture.project(key, mirror=False)
-                (live / "MEMORY.md").write_text("- [Log](log.md)\n")
-                (live / "log.md").write_text(note("log", body="y" * 6500))
+                (live / "MEMORY.md").write_text("- [Log](log.md)\n", encoding="utf-8", newline="\n")
+                (live / "log.md").write_text(note("log", body="y" * 6500), encoding="utf-8", newline="\n")
             first = self.run_triage(fixture)
             second = self.run_triage(fixture)
             self.assertEqual(first.stdout, second.stdout)
@@ -405,8 +385,8 @@ class MemoryTriageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [L](log.md)\n")
-            (live / "log.md").write_text(note("log", body="z" * 6500))
+            (live / "MEMORY.md").write_text("- [L](log.md)\n", encoding="utf-8", newline="\n")
+            (live / "log.md").write_text(note("log", body="z" * 6500), encoding="utf-8", newline="\n")
             payload = json.loads(self.run_triage(fixture).stdout)
             self.assertEqual(payload["schema_version"], 1)
             self.assertEqual(payload["command"], "triage")
@@ -441,13 +421,11 @@ class MemoryFixTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [A](project_alpha_note.md)\n")
-            (live / "project_alpha_note.md").write_text(note("alpha"))
-            (live / "foo-bar.md").write_text(note("foobar-a"))
-            (live / "foo_bar.md").write_text(note("foobar-b"))
-            (live / "beta.md").write_text(
-                note("beta", body="Links: [[alpha-note]], [[totally-unknown]], [[foo bar]].")
-            )
+            (live / "MEMORY.md").write_text("- [A](project_alpha_note.md)\n", encoding="utf-8", newline="\n")
+            (live / "project_alpha_note.md").write_text(note("alpha"), encoding="utf-8", newline="\n")
+            (live / "foo-bar.md").write_text(note("foobar-a"), encoding="utf-8", newline="\n")
+            (live / "foo_bar.md").write_text(note("foobar-b"), encoding="utf-8", newline="\n")
+            (live / "beta.md").write_text(note("beta", body="Links: [[alpha-note]], [[totally-unknown]], [[foo bar]]."), encoding="utf-8", newline="\n")
             payload = json.loads(self.run_fix(fixture).stdout)
             rewrites = [r for r in payload["repairs"] if r["kind"] == "wikilink_rewrite"]
             self.assertEqual(len(rewrites), 1)
@@ -459,11 +437,9 @@ class MemoryFixTests(unittest.TestCase):
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
             header = "# Memory index\n\nIntro prose line.\n\n"
-            (live / "MEMORY.md").write_text(header + "- [Kept](kept.md)\n- [Gone](gone.md)\n")
-            (live / "kept.md").write_text(note("kept"))
-            (live / "fresh.md").write_text(
-                '---\nname: fresh\ndescription: "Delivered milestone #7, tracked"\nmetadata:\n  type: project\n---\nBody.\n'
-            )
+            (live / "MEMORY.md").write_text(header + "- [Kept](kept.md)\n- [Gone](gone.md)\n", encoding="utf-8", newline="\n")
+            (live / "kept.md").write_text(note("kept"), encoding="utf-8", newline="\n")
+            (live / "fresh.md").write_text('---\nname: fresh\ndescription: "Delivered milestone #7, tracked"\nmetadata:\n  type: project\n---\nBody.\n', encoding="utf-8", newline="\n")
             self.mirror_from_live(live, mirror)
             dry = json.loads(self.run_fix(fixture).stdout)
             reconcile = [r for r in dry["repairs"] if r["kind"] == "index_reconcile"]
@@ -471,10 +447,10 @@ class MemoryFixTests(unittest.TestCase):
             self.assertEqual(reconcile[0]["appended"], ["fresh.md"])
             self.assertEqual(reconcile[0]["dropped"], ["gone.md"])
             # Dry-run writes nothing.
-            self.assertIn("- [Gone](gone.md)", (live / "MEMORY.md").read_text())
+            self.assertIn("- [Gone](gone.md)", (live / "MEMORY.md").read_text(encoding="utf-8"))
             # Apply and verify the reconciliation result.
             self.assertEqual(self.run_fix(fixture, "--apply").returncode, 0)
-            text = (live / "MEMORY.md").read_text()
+            text = (live / "MEMORY.md").read_text(encoding="utf-8")
             self.assertTrue(text.startswith(header))  # header + prose preserved byte-for-byte
             self.assertIn("- [Kept](kept.md)", text)
             self.assertNotIn("gone.md", text)
@@ -485,10 +461,10 @@ class MemoryFixTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [A](project_alpha_note.md)\n")
-            (live / "project_alpha_note.md").write_text(note("alpha"))
+            (live / "MEMORY.md").write_text("- [A](project_alpha_note.md)\n", encoding="utf-8", newline="\n")
+            (live / "project_alpha_note.md").write_text(note("alpha"), encoding="utf-8", newline="\n")
             beta_text = note("beta", body="See [[alpha-note]].")
-            (live / "beta.md").write_text(beta_text)
+            (live / "beta.md").write_text(beta_text, encoding="utf-8", newline="\n")
             before = {p.name: p.read_bytes() for p in live.iterdir()}
             self.run_fix(fixture)
             after = {p.name: p.read_bytes() for p in live.iterdir()}
@@ -501,8 +477,8 @@ class MemoryFixTests(unittest.TestCase):
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
             mixed = "- see [combo](gone.md) and [live](kept.md)\n"
-            (live / "MEMORY.md").write_text(mixed + "- [Solo](solo-gone.md)\n")
-            (live / "kept.md").write_text(note("kept"))
+            (live / "MEMORY.md").write_text(mixed + "- [Solo](solo-gone.md)\n", encoding="utf-8", newline="\n")
+            (live / "kept.md").write_text(note("kept"), encoding="utf-8", newline="\n")
             self.mirror_from_live(live, mirror)
             payload = json.loads(self.run_fix(fixture).stdout)
             reconcile = [r for r in payload["repairs"] if r["kind"] == "index_reconcile"][0]
@@ -511,7 +487,7 @@ class MemoryFixTests(unittest.TestCase):
             self.assertIn("solo-gone.md", reconcile["dropped"])
             self.assertNotIn("gone.md", reconcile["dropped"])
             self.assertEqual(self.run_fix(fixture, "--apply").returncode, 0)
-            text = (live / "MEMORY.md").read_text()
+            text = (live / "MEMORY.md").read_text(encoding="utf-8")
             self.assertIn(mixed, text)  # mixed line preserved byte-for-byte
             self.assertNotIn("solo-gone.md", text)  # all-dead line removed
 
@@ -519,23 +495,23 @@ class MemoryFixTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text("- [A](project_alpha_note.md)\n- [B](beta.md)\n")
-            (live / "project_alpha_note.md").write_text(note("alpha"))
+            (live / "MEMORY.md").write_text("- [A](project_alpha_note.md)\n- [B](beta.md)\n", encoding="utf-8", newline="\n")
+            (live / "project_alpha_note.md").write_text(note("alpha"), encoding="utf-8", newline="\n")
             beta = live / "beta.md"
-            beta.write_text(note("beta", body="See [[alpha-note]]."))
+            beta.write_text(note("beta", body="See [[alpha-note]]."), encoding="utf-8", newline="\n")
             self.mirror_from_live(live, mirror)
             # Diverge the mirror: the affected project is now stale.
-            (mirror / "project_alpha_note.md").write_text(note("alpha", body="mirror drift"))
+            (mirror / "project_alpha_note.md").write_text(note("alpha", body="mirror drift"), encoding="utf-8", newline="\n")
             refused = self.run_fix(fixture, "--apply")
             self.assertEqual(refused.returncode, 1)
             self.assertIn("mirror not fresh", refused.stderr)
-            self.assertIn("[[alpha-note]]", beta.read_text())  # nothing written
+            self.assertIn("[[alpha-note]]", beta.read_text(encoding="utf-8"))  # nothing written
             # Re-sync the mirror, then apply and confirm mtime is preserved.
             self.mirror_from_live(live, mirror)
             pre = beta.stat().st_mtime_ns
             time.sleep(0.02)
             self.assertEqual(self.run_fix(fixture, "--apply").returncode, 0)
-            self.assertIn("[[project_alpha_note]]", beta.read_text())
+            self.assertIn("[[project_alpha_note]]", beta.read_text(encoding="utf-8"))
             self.assertEqual(beta.stat().st_mtime_ns, pre)
 
 
@@ -549,14 +525,14 @@ class TriageDescriptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [A](a.md)\n- [B](b.md)\n- [C](c.md)\n- [D](d.md)\n")
+            (live / "MEMORY.md").write_text("- [A](a.md)\n- [B](b.md)\n- [C](c.md)\n- [D](d.md)\n", encoding="utf-8", newline="\n")
             short = note("a").replace("description: Fixture note describing a in detail", "description: Vague words")
-            (live / "a.md").write_text(short)
+            (live / "a.md").write_text(short, encoding="utf-8", newline="\n")
             dup = note("b").replace("describing b in detail", "covering the same exact topic")
-            (live / "b.md").write_text(dup)
+            (live / "b.md").write_text(dup, encoding="utf-8", newline="\n")
             dup2 = note("c").replace("describing c in detail", "covering the same exact topic")
-            (live / "c.md").write_text(dup2)
-            (live / "d.md").write_text(note("d", body="Fine and healthy."))
+            (live / "c.md").write_text(dup2, encoding="utf-8", newline="\n")
+            (live / "d.md").write_text(note("d", body="Fine and healthy."), encoding="utf-8", newline="\n")
             result = self.run_triage(fixture)
             self.assertEqual(result.returncode, 0)
             payload = json.loads(result.stdout)
@@ -570,9 +546,9 @@ class TriageDescriptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "a.md").write_text(note("a"))
+            (live / "a.md").write_text(note("a"), encoding="utf-8", newline="\n")
             # 150 effective lines >= 70% of the 200-line session load cap.
-            (live / "MEMORY.md").write_text("- [A](a.md)\n" + "context line\n" * 149)
+            (live / "MEMORY.md").write_text("- [A](a.md)\n" + "context line\n" * 149, encoding="utf-8", newline="\n")
             result = self.run_triage(fixture)
             payload = json.loads(result.stdout)
             over = payload["summary"]["index_over_budget"]
@@ -592,8 +568,8 @@ class TriageDescriptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "a.md").write_text(note("a"))
-            (live / "MEMORY.md").write_text("- [A](a.md)\n")
+            (live / "a.md").write_text(note("a"), encoding="utf-8", newline="\n")
+            (live / "MEMORY.md").write_text("- [A](a.md)\n", encoding="utf-8", newline="\n")
             payload = json.loads(self.run_triage(fixture).stdout)
             self.assertEqual(payload["summary"]["index_over_budget"], {})
 
@@ -617,8 +593,8 @@ class DecayTests(unittest.TestCase):
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
             last_validated = (dt.date.today() - dt.timedelta(days=157)).isoformat()
-            (live / "MEMORY.md").write_text("[N](decayed.md)\n")
-            (live / "decayed.md").write_text(self._decay_note("decayed", 1.0, last_validated))
+            (live / "MEMORY.md").write_text("[N](decayed.md)\n", encoding="utf-8", newline="\n")
+            (live / "decayed.md").write_text(self._decay_note("decayed", 1.0, last_validated), encoding="utf-8", newline="\n")
             for path in live.iterdir():
                 (mirror / path.name).write_bytes(path.read_bytes())
             result = self.run_audit(fixture)
@@ -633,8 +609,8 @@ class DecayTests(unittest.TestCase):
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
             last_validated = (dt.date.today() - dt.timedelta(days=150)).isoformat()
-            (live / "MEMORY.md").write_text("[N](fresh.md)\n")
-            (live / "fresh.md").write_text(self._decay_note("fresh", 1.0, last_validated))
+            (live / "MEMORY.md").write_text("[N](fresh.md)\n", encoding="utf-8", newline="\n")
+            (live / "fresh.md").write_text(self._decay_note("fresh", 1.0, last_validated), encoding="utf-8", newline="\n")
             for path in live.iterdir():
                 (mirror / path.name).write_bytes(path.read_bytes())
             result = self.run_audit(fixture)
@@ -645,8 +621,8 @@ class DecayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text("[N](broken.md)\n")
-            (live / "broken.md").write_text(self._decay_note("broken", 0.9, "not-a-date"))
+            (live / "MEMORY.md").write_text("[N](broken.md)\n", encoding="utf-8", newline="\n")
+            (live / "broken.md").write_text(self._decay_note("broken", 0.9, "not-a-date"), encoding="utf-8", newline="\n")
             for path in live.iterdir():
                 (mirror / path.name).write_bytes(path.read_bytes())
             result = self.run_audit(fixture)
@@ -659,8 +635,8 @@ class DecayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text("[N](broken.md)\n")
-            (live / "broken.md").write_text(self._decay_note("broken", "high", "2026-01-01"))
+            (live / "MEMORY.md").write_text("[N](broken.md)\n", encoding="utf-8", newline="\n")
+            (live / "broken.md").write_text(self._decay_note("broken", "high", "2026-01-01"), encoding="utf-8", newline="\n")
             for path in live.iterdir():
                 (mirror / path.name).write_bytes(path.read_bytes())
             result = self.run_audit(fixture)
@@ -673,8 +649,8 @@ class DecayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, mirror = fixture.project()
-            (live / "MEMORY.md").write_text("[N](half.md)\n")
-            (live / "half.md").write_text(note("half", extra="  confidence: 0.1\n"))
+            (live / "MEMORY.md").write_text("[N](half.md)\n", encoding="utf-8", newline="\n")
+            (live / "half.md").write_text(note("half", extra="  confidence: 0.1\n"), encoding="utf-8", newline="\n")
             for path in live.iterdir():
                 (mirror / path.name).write_bytes(path.read_bytes())
             result = self.run_audit(fixture)
@@ -689,8 +665,8 @@ class DecayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [D](decayed.md)\n")
-            (live / "decayed.md").write_text(self._decay_note("decayed", 1.0, "2026-01-01"))
+            (live / "MEMORY.md").write_text("- [D](decayed.md)\n", encoding="utf-8", newline="\n")
+            (live / "decayed.md").write_text(self._decay_note("decayed", 1.0, "2026-01-01"), encoding="utf-8", newline="\n")
             now = (dt.date(2026, 1, 1) + dt.timedelta(days=157)).isoformat()
             result = self.run_triage(fixture, "--now", now)
             payload = json.loads(result.stdout)
@@ -702,8 +678,8 @@ class DecayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [F](fresh.md)\n")
-            (live / "fresh.md").write_text(self._decay_note("fresh", 1.0, "2026-01-01"))
+            (live / "MEMORY.md").write_text("- [F](fresh.md)\n", encoding="utf-8", newline="\n")
+            (live / "fresh.md").write_text(self._decay_note("fresh", 1.0, "2026-01-01"), encoding="utf-8", newline="\n")
             now = (dt.date(2026, 1, 1) + dt.timedelta(days=150)).isoformat()
             result = self.run_triage(fixture, "--now", now)
             payload = json.loads(result.stdout)
@@ -713,8 +689,8 @@ class DecayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [B](broken.md)\n")
-            (live / "broken.md").write_text(self._decay_note("broken", 0.9, "not-a-date"))
+            (live / "MEMORY.md").write_text("- [B](broken.md)\n", encoding="utf-8", newline="\n")
+            (live / "broken.md").write_text(self._decay_note("broken", 0.9, "not-a-date"), encoding="utf-8", newline="\n")
             result = self.run_triage(fixture)
             self.assertEqual(result.returncode, 0)
             payload = json.loads(result.stdout)
@@ -724,8 +700,8 @@ class DecayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [B](broken.md)\n")
-            (live / "broken.md").write_text(self._decay_note("broken", "high", "2026-01-01"))
+            (live / "MEMORY.md").write_text("- [B](broken.md)\n", encoding="utf-8", newline="\n")
+            (live / "broken.md").write_text(self._decay_note("broken", "high", "2026-01-01"), encoding="utf-8", newline="\n")
             result = self.run_triage(fixture)
             self.assertEqual(result.returncode, 0)
             payload = json.loads(result.stdout)
@@ -735,8 +711,8 @@ class DecayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live, _ = fixture.project(mirror=False)
-            (live / "MEMORY.md").write_text("- [H](half.md)\n")
-            (live / "half.md").write_text(note("half", extra="  last_validated: 2020-01-01\n"))
+            (live / "MEMORY.md").write_text("- [H](half.md)\n", encoding="utf-8", newline="\n")
+            (live / "half.md").write_text(note("half", extra="  last_validated: 2020-01-01\n"), encoding="utf-8", newline="\n")
             result = self.run_triage(fixture)
             self.assertEqual(result.returncode, 0)
             payload = json.loads(result.stdout)
@@ -759,9 +735,9 @@ class AuditHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             memory = Path(temp) / "memory"
             memory.mkdir()
-            (memory / "MEMORY.md").write_text("- [a](a.md)\n")
+            (memory / "MEMORY.md").write_text("- [a](a.md)\n", encoding="utf-8", newline="\n")
             for name in ("a", "b", "new"):
-                (memory / f"{name}.md").write_text(note(name))
+                (memory / f"{name}.md").write_text(note(name), encoding="utf-8", newline="\n")
             records = audit.scan_project_notes(memory)
             restricted = audit.compute_index_reconcile("p", memory, records, restrict_appends_to={"new.md"})
             self.assertEqual(restricted["appended"], ["new.md"])  # b.md left for fix mode
@@ -816,17 +792,15 @@ class AuditHelperTests(unittest.TestCase):
     def test_index_reconcile_strips_dead_fragment_from_packed_line(self):
         with tempfile.TemporaryDirectory() as temp:
             memory = Path(temp)
-            (memory / "live.md").write_text("---\nname: live\ndescription: live note here\nmetadata:\n  type: project\n---\nBody.\n")
-            (memory / "MEMORY.md").write_text(
-                "# idx\n"
-                "- Packed: [Live](live.md) still here; [Dead](dead.md) gone note; [Live2](live.md) again\n"
-                "- [dead2](dead2.md): a whole-dead line\n"
-            )
+            (memory / "live.md").write_text("---\nname: live\ndescription: live note here\nmetadata:\n  type: project\n---\nBody.\n", encoding="utf-8", newline="\n")
+            (memory / "MEMORY.md").write_text("# idx\n"
+            "- Packed: [Live](live.md) still here; [Dead](dead.md) gone note; [Live2](live.md) again\n"
+            "- [dead2](dead2.md): a whole-dead line\n", encoding="utf-8", newline="\n")
             records = {"live.md": {}}
             plan = audit.compute_index_reconcile("proj", memory, records, restrict_appends_to=set())
             self.assertEqual(plan["dropped"], ["dead2.md"])
             self.assertEqual(plan["fragment_dropped"], ["dead.md"])
-            out = audit.render_index_reconcile((memory / "MEMORY.md").read_text(), memory, plan)
+            out = audit.render_index_reconcile((memory / "MEMORY.md").read_text(encoding="utf-8"), memory, plan)
             self.assertIn("- Packed: [Live](live.md) still here; [Live2](live.md) again\n", out)
             self.assertNotIn("dead.md", out)
             self.assertNotIn("dead2.md", out)
@@ -925,8 +899,8 @@ class AuditHelperTests(unittest.TestCase):
                 "description: Fixture note describing a in detail",
                 "description: Fixed the gateway stamp (issue",
             )
-            (live / "a.md").write_text(content)
-            (live / "MEMORY.md").write_text("- [A](a.md)\n")
+            (live / "a.md").write_text(content, encoding="utf-8", newline="\n")
+            (live / "MEMORY.md").write_text("- [A](a.md)\n", encoding="utf-8", newline="\n")
             result = subprocess.run(
                 [
                     sys.executable, "-m", "memory_dream", "audit",
@@ -950,17 +924,15 @@ class TriageSuppressionTests(unittest.TestCase):
             memory = root / "live" / "proj" / "memory"
             memory.mkdir(parents=True)
             big_body = "RESOLVED\n" + ("x" * 7000)
-            (memory / "big.md").write_text(
-                "---\nname: big\ndescription: a large consolidated note fixture here\n"
-                "metadata:\n  type: project\n---\n" + big_body
-            )
-            (memory / "MEMORY.md").write_text("# Index\n- [big](big.md) - fixture\n")
+            (memory / "big.md").write_text("---\nname: big\ndescription: a large consolidated note fixture here\n"
+            "metadata:\n  type: project\n---\n" + big_body, encoding="utf-8", newline="\n")
+            (memory / "MEMORY.md").write_text("# Index\n- [big](big.md) - fixture\n", encoding="utf-8", newline="\n")
             pass_dir = root / "passes" / "20260101-000000"
             pass_dir.mkdir(parents=True)
             (pass_dir / "manifest.json").write_text(json.dumps(
                 {"proposals": [{"project": "proj", "results": [{"path": "big.md", "content": "x"}]}]}
-            ))
-            (pass_dir / "apply-manifest.json").write_text("{}")
+            ), encoding="utf-8", newline="\n")
+            (pass_dir / "apply-manifest.json").write_text("{}", encoding="utf-8", newline="\n")
             claude_config_dir = root / "claude-config"
             claude_config_dir.mkdir()
             env = _clean_env(claude_config_dir)

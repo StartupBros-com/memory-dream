@@ -85,14 +85,14 @@ class Fixture:
 
     def freeze(self, questions, name="questions.json"):
         qpath = self.root / name
-        qpath.write_text(json.dumps({"questions": questions}))
+        qpath.write_text(json.dumps({"questions": questions}), encoding="utf-8", newline="\n")
         suite = self.root / "suite.json"
         result = self.run("freeze", "--questions", str(qpath), "--out", str(suite))
         return result, suite
 
     def score(self, routes, run_id, suite=None):
         rpath = self.root / f"routes-{run_id}.json"
-        rpath.write_text(json.dumps({"routes": routes}))
+        rpath.write_text(json.dumps({"routes": routes}), encoding="utf-8", newline="\n")
         return self.run(
             "score",
             "--suite",
@@ -106,7 +106,7 @@ class Fixture:
         )
 
     def run_file(self, run_id):
-        return json.loads((self.root / "runs" / f"run-{run_id}.json").read_text())
+        return json.loads((self.root / "runs" / f"run-{run_id}.json").read_text(encoding="utf-8"))
 
 
 class FreezeTests(unittest.TestCase):
@@ -114,8 +114,8 @@ class FreezeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live = fixture.project()
-            (live / "a.md").write_text(note("a", body=BODY))
-            (live / "MEMORY.md").write_text("- [a](a.md)\n")
+            (live / "a.md").write_text(note("a", body=BODY), encoding="utf-8", newline="\n")
+            (live / "MEMORY.md").write_text("- [a](a.md)\n", encoding="utf-8", newline="\n")
             questions = [
                 fixture.question(),  # valid: snippet is verbatim in a.md
                 fixture.question(snippet="this text appears nowhere in the note body at all"),
@@ -126,7 +126,7 @@ class FreezeTests(unittest.TestCase):
             ]
             result, suite_path = fixture.freeze(questions)
             self.assertEqual(result.returncode, 0, result.stderr)
-            suite = json.loads(suite_path.read_text())
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
             kept = {(q["archetype"], q.get("source")) for q in suite["questions"]}
             self.assertEqual(kept, {("direct", "a.md"), ("unanswerable", None)})
             self.assertIn("fabricated", result.stderr)
@@ -136,10 +136,10 @@ class FreezeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live = fixture.project()
-            (live / "a.md").write_text(note("a", body=BODY))
+            (live / "a.md").write_text(note("a", body=BODY), encoding="utf-8", newline="\n")
             result, suite_path = fixture.freeze([fixture.question(), fixture.question()])
             self.assertEqual(result.returncode, 0, result.stderr)
-            suite = json.loads(suite_path.read_text())
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
             self.assertEqual(len(suite["questions"]), 1)
             self.assertTrue(suite["suite_id"])
 
@@ -147,9 +147,9 @@ class FreezeTests(unittest.TestCase):
 class ScoreTests(unittest.TestCase):
     def _frozen(self, fixture):
         live = fixture.project()
-        (live / "a.md").write_text(note("a", body=BODY))
-        (live / "b.md").write_text(note("b", body="Unrelated sibling content here."))
-        (live / "MEMORY.md").write_text("- [a](a.md)\n- [b](b.md)\n")
+        (live / "a.md").write_text(note("a", body=BODY), encoding="utf-8", newline="\n")
+        (live / "b.md").write_text(note("b", body="Unrelated sibling content here."), encoding="utf-8", newline="\n")
+        (live / "MEMORY.md").write_text("- [a](a.md)\n- [b](b.md)\n", encoding="utf-8", newline="\n")
         result, _suite = fixture.freeze(
             [
                 fixture.question(),
@@ -157,7 +157,7 @@ class ScoreTests(unittest.TestCase):
             ]
         )
         assert result.returncode == 0, result.stderr
-        suite = json.loads((fixture.root / "suite.json").read_text())
+        suite = json.loads((fixture.root / "suite.json").read_text(encoding="utf-8"))
         by_archetype = {q["archetype"]: q["id"] for q in suite["questions"]}
         return live, by_archetype
 
@@ -211,8 +211,8 @@ class ScoreTests(unittest.TestCase):
             fixture = Fixture(Path(temp))
             live, ids = self._frozen(fixture)
             (live / "a.md").unlink()
-            (live / "atomic.md").write_text(note("atomic", body=f"After the split: {SNIPPET}."))
-            (live / "MEMORY.md").write_text("- [atomic](atomic.md)\n- [b](b.md)\n")
+            (live / "atomic.md").write_text(note("atomic", body=f"After the split: {SNIPPET}."), encoding="utf-8", newline="\n")
+            (live / "MEMORY.md").write_text("- [atomic](atomic.md)\n- [b](b.md)\n", encoding="utf-8", newline="\n")
             result = fixture.score(
                 [
                     {"id": ids["direct"], "routed": ["atomic.md"], "abstained": False},
@@ -256,7 +256,7 @@ class ScoreTests(unittest.TestCase):
                 ],
                 "first",
             )
-            (live / "a.md").write_text(note("a", body=f"SUPERSEDED 2026-07-01: old.\n{BODY}"))
+            (live / "a.md").write_text(note("a", body=f"SUPERSEDED 2026-07-01: old.\n{BODY}"), encoding="utf-8", newline="\n")
             result = fixture.score(
                 [
                     {"id": ids["direct"], "routed": [], "abstained": True},
@@ -288,7 +288,7 @@ class ScoreTests(unittest.TestCase):
                 {"id": ids["unanswerable"], "routed": [], "abstained": True},
             ]
             rpath = fixture.root / "routes-fp.json"
-            rpath.write_text(json.dumps({"routes": routes}))
+            rpath.write_text(json.dumps({"routes": routes}), encoding="utf-8", newline="\n")
             base = [
                 "score",
                 "--suite",
@@ -310,7 +310,7 @@ class ScoreTests(unittest.TestCase):
             live, ids = self._frozen(fixture)
             # unindexed.md exists on disk and contains the answer, but is NOT in the
             # loaded index: crediting it would inflate the metric.
-            (live / "unindexed.md").write_text(note("unindexed", body=BODY))
+            (live / "unindexed.md").write_text(note("unindexed", body=BODY), encoding="utf-8", newline="\n")
             result = fixture.score(
                 [
                     {"id": ids["direct"], "routed": "a.md", "abstained": False},
@@ -338,12 +338,12 @@ class ScoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live = fixture.project()
-            (live / "a.md").write_text(note("a", body=f"See [[b]]. {BODY}"))
-            (live / "b.md").write_text(note("b", body="The linked half of the chain."))
-            (live / "MEMORY.md").write_text("- [a](a.md)\n- [b](b.md)\n")
+            (live / "a.md").write_text(note("a", body=f"See [[b]]. {BODY}"), encoding="utf-8", newline="\n")
+            (live / "b.md").write_text(note("b", body="The linked half of the chain."), encoding="utf-8", newline="\n")
+            (live / "MEMORY.md").write_text("- [a](a.md)\n- [b](b.md)\n", encoding="utf-8", newline="\n")
             result, _ = fixture.freeze([fixture.question(archetype="multihop")])
             self.assertEqual(result.returncode, 0, result.stderr)
-            suite = json.loads((fixture.root / "suite.json").read_text())
+            suite = json.loads((fixture.root / "suite.json").read_text(encoding="utf-8"))
             qid = suite["questions"][0]["id"]
             result = fixture.score([{"id": qid, "routed": ["a.md", "b.md"], "abstained": False}], "hop")
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -380,7 +380,7 @@ class MultiPassAndPairedTests(unittest.TestCase):
             paths = []
             for index, routes in enumerate((good, noisy, good)):
                 path = fixture.root / f"pass-{index}.json"
-                path.write_text(json.dumps({"routes": routes}))
+                path.write_text(json.dumps({"routes": routes}), encoding="utf-8", newline="\n")
                 paths.append(str(path))
             result = fixture.run(
                 "score",
@@ -417,16 +417,14 @@ class MultiPassAndPairedTests(unittest.TestCase):
                 "base",
             )
             rpath = fixture.root / "routes-flip.json"
-            rpath.write_text(
-                json.dumps(
-                    {
-                        "routes": [
-                            {"id": ids["direct"], "routed": ["b.md"], "abstained": False},
-                            {"id": ids["unanswerable"], "routed": [], "abstained": True},
-                        ]
-                    }
-                )
-            )
+            rpath.write_text(json.dumps(
+                {
+                    "routes": [
+                        {"id": ids["direct"], "routed": ["b.md"], "abstained": False},
+                        {"id": ids["unanswerable"], "routed": [], "abstained": True},
+                    ]
+                }
+            ), encoding="utf-8", newline="\n")
             result = fixture.run(
                 "score",
                 "--suite",
@@ -451,9 +449,9 @@ class MultiPassAndPairedTests(unittest.TestCase):
             self.assertIn("paired vs base: 0 up, 1 down", result.stdout)
             # A different suite is refused, never silently compared.
             other_suite = fixture.root / "other-suite.json"
-            suite = json.loads((fixture.root / "suite.json").read_text())
+            suite = json.loads((fixture.root / "suite.json").read_text(encoding="utf-8"))
             suite["suite_id"] = "deadbeef00000000"
-            other_suite.write_text(json.dumps(suite))
+            other_suite.write_text(json.dumps(suite), encoding="utf-8", newline="\n")
             refused = fixture.run(
                 "score",
                 "--suite",
@@ -486,16 +484,14 @@ class MultiPassAndPairedTests(unittest.TestCase):
             )
             (live / "a.md").unlink()  # anchor gone from the corpus entirely
             rpath = fixture.root / "routes-decay.json"
-            rpath.write_text(
-                json.dumps(
-                    {
-                        "routes": [
-                            {"id": ids["direct"], "routed": [], "abstained": True},
-                            {"id": ids["unanswerable"], "routed": [], "abstained": True},
-                        ]
-                    }
-                )
-            )
+            rpath.write_text(json.dumps(
+                {
+                    "routes": [
+                        {"id": ids["direct"], "routed": [], "abstained": True},
+                        {"id": ids["unanswerable"], "routed": [], "abstained": True},
+                    ]
+                }
+            ), encoding="utf-8", newline="\n")
             result = fixture.run(
                 "score",
                 "--suite",
@@ -524,9 +520,9 @@ class DiscriminabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))
             live = fixture.project()
-            (live / "a.md").write_text(note("a", description="reusable MLX serving gotchas from the champion trial"))
-            (live / "b.md").write_text(note("b", description="reusable MLX serving lessons from the champion trial"))
-            (live / "c.md").write_text(note("c", description="unrelated billing invoice retry policy decision"))
+            (live / "a.md").write_text(note("a", description="reusable MLX serving gotchas from the champion trial"), encoding="utf-8", newline="\n")
+            (live / "b.md").write_text(note("b", description="reusable MLX serving lessons from the champion trial"), encoding="utf-8", newline="\n")
+            (live / "c.md").write_text(note("c", description="unrelated billing invoice retry policy decision"), encoding="utf-8", newline="\n")
             result = fixture.run("discriminability")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("a.md ~ b.md", result.stdout)
@@ -539,16 +535,14 @@ class SampleTests(unittest.TestCase):
             fixture = Fixture(Path(temp))
             live = fixture.project()
             for index in range(4):
-                (live / f"n{index}.md").write_text(note(f"n{index}", body="Substantial body. " * 40))
+                (live / f"n{index}.md").write_text(note(f"n{index}", body="Substantial body. " * 40), encoding="utf-8", newline="\n")
             # Padded past --min-bytes so the too-small filter can't explain the
             # exclusion by itself: this note is dropped for being sensitive.
-            (live / "leaky.md").write_text(
-                note(
-                    "leaky",
-                    body="Extra filler text to push this well past the byte threshold so the "
-                    "sensitivity check actually runs. api_key = 'sk_live_ABCDEFGHIJKLMNOP1234'",
-                )
-            )
+            (live / "leaky.md").write_text(note(
+                "leaky",
+                body="Extra filler text to push this well past the byte threshold so the "
+                "sensitivity check actually runs. api_key = 'sk_live_ABCDEFGHIJKLMNOP1234'",
+            ), encoding="utf-8", newline="\n")
             result = fixture.run("sample", "--per-project", "2", "--min-bytes", "100")
             self.assertEqual(result.returncode, 0, result.stderr)
             # The JSON sample is stdout-only; the coverage summary goes to stderr.

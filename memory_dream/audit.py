@@ -733,7 +733,7 @@ def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
         if dt.date.fromtimestamp(apply_manifest.stat().st_mtime) < cutoff:
             continue
         try:
-            proposals = json.loads(manifest.read_text())["proposals"]
+            proposals = json.loads(manifest.read_text(encoding="utf-8"))["proposals"]
         except (json.JSONDecodeError, KeyError, OSError):
             continue
         for proposal in proposals:

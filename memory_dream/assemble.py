@@ -224,9 +224,7 @@ def run_plan(args: argparse.Namespace) -> int:
     shards_dir.mkdir(parents=True, exist_ok=True)
     for cluster in clusters:
         shard = {"schema_version": 1, "stage": "plan-shard", "cluster": cluster}
-        (shards_dir / f"{cluster['cluster_id']}.json").write_text(
-            json.dumps(shard, sort_keys=True, indent=1) + "\n"
-        )
+        (shards_dir / f"{cluster['cluster_id']}.json").write_text(json.dumps(shard, sort_keys=True, indent=1) + "\n", encoding="utf-8", newline="\n")
     print(f"memory-dream: {len(clusters)} plan shard(s) -> {shards_dir}", file=sys.stderr)
     return 0
 
@@ -1039,7 +1037,7 @@ def run_build(args: argparse.Namespace) -> int:
                 continue
             file_diffs = proposal_file_diffs(memory_dir, proposal, retarget)
             file_diffs_by_id[proposal["id"]] = file_diffs
-            (out / f"{proposal['id']}.diff").write_text(_unified_from_file_diffs(file_diffs))
+            (out / f"{proposal['id']}.diff").write_text(_unified_from_file_diffs(file_diffs), encoding="utf-8", newline="\n")
         # Anticipated inbound-link retargets (all-approved projection) for the preview.
         edits = anticipated_retargets(memory_dir, project_proposals)
         if edits:
@@ -1049,7 +1047,7 @@ def run_build(args: argparse.Namespace) -> int:
                 before = (memory_dir / rel).read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
                 after = edits[rel].splitlines(keepends=True)
                 chunks.extend(difflib.unified_diff(before, after, fromfile=f"a/{rel}", tofile=f"b/{rel}"))
-            (out / f"retargets-{project}.diff").write_text("".join(chunks))
+            (out / f"retargets-{project}.diff").write_text("".join(chunks), encoding="utf-8", newline="\n")
         # Anticipated MEMORY.md reconciliation, so index byte changes are in the preview.
         index_texts = anticipated_index_texts(memory_dir, project_proposals)
         if index_texts:
@@ -1061,7 +1059,9 @@ def run_build(args: argparse.Namespace) -> int:
                         current.splitlines(keepends=True), reconciled.splitlines(keepends=True),
                         fromfile="a/MEMORY.md", tofile="b/MEMORY.md",
                     )
-                )
+                ),
+                encoding="utf-8",
+                newline="\n",
             )
             index_diffs_by_project[project] = (current.splitlines(), reconciled.splitlines())
     # A pass must not silently spend index budget past Claude Code's load cap:
@@ -1114,7 +1114,7 @@ def run_build(args: argparse.Namespace) -> int:
         "mirror_root": str(mirror_root) if mirror_root else None,
         "proposals": proposals,
     }
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     # Plain-markdown copies of every result, one file each, so gate agents
     # (checkers, quality-panel lenses) read exactly the files they are assigned
     # instead of the whole JSON-escaped manifest. Token shaping only: content is
@@ -1123,7 +1123,7 @@ def run_build(args: argparse.Namespace) -> int:
     results_dir.mkdir(exist_ok=True)
     for proposal in proposals:
         for result in proposal.get("results", []):
-            (results_dir / f"{proposal['project']}__{result['path']}").write_text(result["content"])
+            (results_dir / f"{proposal['project']}__{result['path']}").write_text(result["content"], encoding="utf-8", newline="\n")
     # Filename-casing drift lint (measured 2026-07-31 during the authors'
     # consolidation campaign: drafters silently renamed kebab-case survivors to
     # snake_case, mixing conventions inside one project store). Flag NEW
@@ -1200,7 +1200,7 @@ def run_build(args: argparse.Namespace) -> int:
         "casing_drift": casing_drift,
         "redescribe_index_warnings": redescribe_index_warnings,
     }
-    (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     preview = write_preview_html(out, manifest, report, file_diffs_by_id, index_diffs_by_project)
     print(f"memory-dream: {len(proposals)} proposal(s), {len(dropped)} dropped -> {out}")
     print(f"preview: {preview}")
@@ -1309,7 +1309,7 @@ def run_archive(args: argparse.Namespace) -> int:
         "mirror_root": str(mirror_root) if mirror_root else None,
         "proposals": [proposal],
     }
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     remaining = [ln for ln in index_text.splitlines() if all(ln not in t.splitlines() for t in entry_texts)]
     new_index = "\n".join(remaining).rstrip() + "\n"
     if ARCHIVE_POINTER not in new_index:
@@ -1320,8 +1320,8 @@ def run_archive(args: argparse.Namespace) -> int:
             fromfile="a/MEMORY.md", tofile="b/MEMORY.md",
         )
     )
-    (out / f"index-{args.project}.diff").write_text(diff_text)
-    (out / "archive-additions.txt").write_text("\n".join(entry_texts) + "\n")
+    (out / f"index-{args.project}.diff").write_text(diff_text, encoding="utf-8", newline="\n")
+    (out / "archive-additions.txt").write_text("\n".join(entry_texts) + "\n", encoding="utf-8", newline="\n")
     report = {
         "schema_version": 1,
         "proposals": 1,
@@ -1334,7 +1334,7 @@ def run_archive(args: argparse.Namespace) -> int:
         "archive": {"project": args.project, "entries": len(candidates), "bytes_freed": freed,
                     "post_archive_index_bytes": len(new_index.encode("utf-8")), "kept": kept},
     }
-    (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     preview = write_preview_html(out, manifest, report, {}, {args.project: (index_text.splitlines(), new_index.splitlines())})
     print(f"memory-dream: archive patch set, {len(candidates)} entries, ~{freed}B freed -> {out}")
     print(f"preview: {preview}")

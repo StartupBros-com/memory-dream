@@ -73,7 +73,7 @@ def _proposals_by_cluster_id(root):
     """Every drafted cluster's exact proposals payload, keyed by cluster_id — the
     same value run_build's `drafts` dict holds per cluster, so a digest computed
     from it here matches what build recomputes."""
-    drafts = json.loads((root / "drafts.json").read_text())
+    drafts = json.loads((root / "drafts.json").read_text(encoding="utf-8"))
     clusters = drafts.get("clusters", drafts) if isinstance(drafts, dict) else drafts
     if isinstance(clusters, list):
         return {c["cluster_id"]: c.get("proposals", []) for c in clusters}
@@ -92,7 +92,7 @@ def write_findings(root):
             cid: {"status": "clean", "drafts_digest": audit.content_id(proposals)}
             for cid, proposals in proposals_by_id.items()
         }
-    }))
+    }), encoding="utf-8", newline="\n")
     return path
 
 
@@ -179,7 +179,7 @@ class AssembleTests(unittest.TestCase):
         live = root / "live" / "proj" / "memory"
         live.mkdir(parents=True)
         for name, content in files.items():
-            (live / name).write_text(content)
+            (live / name).write_text(content, encoding="utf-8", newline="\n")
         return root / "live", live
 
     def _cluster(self, paths, live, project="proj"):
@@ -285,7 +285,7 @@ class AssembleTests(unittest.TestCase):
             file_diffs = {"p1": [("a.md", "a.md", ["old line one", "old line two"], ["new line one"])]}
             path = ASM.write_preview_html(out, manifest, report, file_diffs)
             self.assertTrue(path.exists())
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
             self.assertIn("tok123", content)  # approval token shown
             self.assertIn("shrink it", content)  # justification
             self.assertIn('table class="diff"', content)  # side-by-side table
@@ -300,9 +300,9 @@ class AssembleTests(unittest.TestCase):
             live_root, live = self._project(root, {"a.md": note("a", body="Fact.")})
             cluster = self._cluster(["a.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [{"action": "leave", "justification": "fine", "deletes": []}]}]}
-            (root / "drafts.json").write_text(json.dumps(drafts))
+            (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -314,8 +314,11 @@ class AssembleTests(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(out.stat().st_mode & 0o777, 0o700)
-            self.assertEqual(out.parent.stat().st_mode & 0o777, 0o700)
+            if os.name != "nt":
+                # compat.restrict_permissions is a documented no-op on Windows
+                # (ACLs are the operator's); the mode contract is POSIX-only.
+                self.assertEqual(out.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(out.parent.stat().st_mode & 0o777, 0o700)
 
     def test_plan_shards_dir_writes_one_shard_per_cluster(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -346,7 +349,7 @@ class AssembleTests(unittest.TestCase):
                 [p.stem for p in shard_files],
             )
             for shard_file in shard_files:
-                shard = json.loads(shard_file.read_text())
+                shard = json.loads(shard_file.read_text(encoding="utf-8"))
                 match = [c for c in plan["clusters"] if c["cluster_id"] == shard["cluster"]["cluster_id"]]
                 self.assertEqual(shard["cluster"], match[0])
 
@@ -356,12 +359,12 @@ class AssembleTests(unittest.TestCase):
             live_root, live = self._project(root, {"a.md": note("a", body="Fact.")})
             cluster = self._cluster(["a.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             rewritten = note("a", body="Compressed durable fact.")
             drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [
                 {"action": "compress", "justification": "shrink", "survivor": {"path": "a.md", "content": rewritten}, "deletes": []},
             ]}]}
-            (root / "drafts.json").write_text(json.dumps(drafts))
+            (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -373,13 +376,13 @@ class AssembleTests(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            manifest = json.loads((out / "manifest.json").read_text())
+            manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
             # Every manifest result has a byte-identical plain-file copy under results/.
             for proposal in manifest["proposals"]:
                 for res in proposal["results"]:
                     plain = out / "results" / f"{proposal['project']}__{res['path']}"
                     self.assertTrue(plain.exists(), plain)
-                    self.assertEqual(plain.read_text(), res["content"])
+                    self.assertEqual(plain.read_text(encoding="utf-8"), res["content"])
 
     def test_build_warns_when_redescribe_target_is_packed_index_line(self):
         # refresh_index_lines never rewrites a multi-target (packed) index line, so a
@@ -388,16 +391,14 @@ class AssembleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             live_root, live = self._project(root, {"a.md": note("a", body="Fact."), "b.md": note("b", body="Other.")})
-            (live / "MEMORY.md").write_text(
-                "# idx\n- Packed: [A](a.md) something; [B](b.md) other\n"
-            )
+            (live / "MEMORY.md").write_text("# idx\n- Packed: [A](a.md) something; [B](b.md) other\n", encoding="utf-8", newline="\n")
             cluster = self._cluster(["a.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [
                 {"action": "redescribe", "justification": "sharpen", "survivor": {"path": "a.md", "description": "a sharper routing description for note a"}, "deletes": []},
             ]}]}
-            (root / "drafts.json").write_text(json.dumps(drafts))
+            (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -409,7 +410,7 @@ class AssembleTests(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            report = json.loads((out / "report.json").read_text())
+            report = json.loads((out / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 report["redescribe_index_warnings"],
                 [{"project": "proj", "path": "a.md", "kind": "packed-line-only"}],
@@ -422,16 +423,14 @@ class AssembleTests(unittest.TestCase):
             live_root, live = self._project(root, {"a.md": note("a", body="Fact.")})
             records = audit.scan_project_notes(live)
             rec = records["a.md"]
-            (live / "MEMORY.md").write_text(
-                "# idx\n" + audit.index_entry_line(rec["name"], rec.get("description") or "", "a.md") + "\n"
-            )
+            (live / "MEMORY.md").write_text("# idx\n" + audit.index_entry_line(rec["name"], rec.get("description") or "", "a.md") + "\n", encoding="utf-8", newline="\n")
             cluster = self._cluster(["a.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [
                 {"action": "redescribe", "justification": "sharpen", "survivor": {"path": "a.md", "description": "a sharper routing description for note a"}, "deletes": []},
             ]}]}
-            (root / "drafts.json").write_text(json.dumps(drafts))
+            (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -443,7 +442,7 @@ class AssembleTests(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            report = json.loads((out / "report.json").read_text())
+            report = json.loads((out / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["redescribe_index_warnings"], [])
 
     def test_multiple_leaves_in_one_cluster_get_distinct_ids(self):
@@ -456,12 +455,12 @@ class AssembleTests(unittest.TestCase):
             live_root, live = self._project(root, {"a.md": note("a", body="Fact."), "b.md": note("b", body="Other.")})
             cluster = self._cluster(["a.md", "b.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [
                 {"action": "leave", "justification": "a is fine", "deletes": []},
                 {"action": "leave", "justification": "b is fine", "deletes": []},
             ]}]}
-            (root / "drafts.json").write_text(json.dumps(drafts))
+            (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -473,7 +472,7 @@ class AssembleTests(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            manifest = json.loads((out / "manifest.json").read_text())
+            manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
             ids = [p["id"] for p in manifest["proposals"]]
             self.assertEqual(len(ids), 2)
             self.assertEqual(len(set(ids)), 2)
@@ -488,12 +487,12 @@ class AssembleTests(unittest.TestCase):
             live_root, live = self._project(root, {"a.md": note("a", body="Fact."), "b.md": note("b", body="Other.")})
             cluster = self._cluster(["a.md", "b.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [
                 {"action": "leave", "justification": "fine", "deletes": []},
                 {"action": "leave", "justification": "fine", "deletes": []},
             ]}]}
-            (root / "drafts.json").write_text(json.dumps(drafts))
+            (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -516,17 +515,17 @@ class AssembleTests(unittest.TestCase):
             live_root, live = self._project(root, {"a.md": note("a", body="Fact.")})
             # inflate the existing index to just under the byte cap
             filler = "- [x](x.md) — " + "y" * 200 + "\n"
-            (live / "MEMORY.md").write_text("- [a](a.md) — a note\n" + filler * 124)
+            (live / "MEMORY.md").write_text("- [a](a.md) — a note\n" + filler * 124, encoding="utf-8", newline="\n")
             cluster = self._cluster(["a.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             body = "Topic one.\n\nSee [[a-extract]]."
             drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [{
                 "action": "split", "justification": "split it",
                 "survivor": {"path": "a.md", "content": note("a", body=body)},
                 "extracts": [{"path": "a-extract.md", "content": note("a-extract", body="Topic two, with a description long enough to push the reconciled index over the byte cap for this test scenario.")}],
                 "deletes": []}]}]}
-            (root / "drafts.json").write_text(json.dumps(drafts))
+            (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -538,7 +537,7 @@ class AssembleTests(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            report = json.loads((out / "report.json").read_text())
+            report = json.loads((out / "report.json").read_text(encoding="utf-8"))
             if report["proposals"]:
                 self.assertIn("index_over_cap", report)
                 if report["index_over_cap"]:
@@ -554,12 +553,10 @@ class AssembleTests(unittest.TestCase):
                 "hot.md": note("hot", body="Active 2026-07-19."),
                 "undated.md": note("undated", body="No dates here."),
             })
-            (live / "MEMORY.md").write_text(
-                "# Index\n"
-                "- [cold](cold.md) — resolved 2026-06-01 work\n"
-                "- [hot](hot.md) — active 2026-07-19 work\n"
-                "- [undated](undated.md) — timeless convention\n"
-            )
+            (live / "MEMORY.md").write_text("# Index\n"
+            "- [cold](cold.md) — resolved 2026-06-01 work\n"
+            "- [hot](hot.md) — active 2026-07-19 work\n"
+            "- [undated](undated.md) — timeless convention\n", encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -570,15 +567,15 @@ class AssembleTests(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            manifest = json.loads((out / "manifest.json").read_text())
+            manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(len(manifest["proposals"]), 1)
             prop = manifest["proposals"][0]
             self.assertEqual(prop["action"], "archive")
             self.assertEqual(len(prop["archive_entries"]), 1)
             self.assertIn("cold.md", prop["archive_entries"][0])
-            report = json.loads((out / "report.json").read_text())
+            report = json.loads((out / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["archive"]["entries"], 1)
-            self.assertTrue((out / "index-proj.diff").read_text())
+            self.assertTrue((out / "index-proj.diff").read_text(encoding="utf-8"))
 
     def test_archive_keep_retains_content_hot_candidates(self):
         # Date is only the candidate filter; --keep retains content-hot entries,
@@ -589,11 +586,9 @@ class AssembleTests(unittest.TestCase):
                 "cold.md": note("cold", body="Resolved 2026-06-01."),
                 "doctrine.md": note("doctrine", body="Convention settled 2026-05-01."),
             })
-            (live / "MEMORY.md").write_text(
-                "# Index\n"
-                "- [cold](cold.md) — resolved 2026-06-01 work\n"
-                "- [doctrine](doctrine.md) — standing convention, settled 2026-05-01\n"
-            )
+            (live / "MEMORY.md").write_text("# Index\n"
+            "- [cold](cold.md) — resolved 2026-06-01 work\n"
+            "- [doctrine](doctrine.md) — standing convention, settled 2026-05-01\n", encoding="utf-8", newline="\n")
             out = root / "logs" / "ts"
             env = subprocess_env(root / "claude-config")
             result = run_cli(
@@ -605,10 +600,10 @@ class AssembleTests(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            prop = json.loads((out / "manifest.json").read_text())["proposals"][0]
+            prop = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["proposals"][0]
             self.assertEqual(len(prop["archive_entries"]), 1)
             self.assertIn("cold.md", prop["archive_entries"][0])
-            report = json.loads((out / "report.json").read_text())
+            report = json.loads((out / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(len(report["archive"]["kept"]), 1)
             self.assertIn("doctrine.md", report["archive"]["kept"][0]["entry"])
             self.assertEqual(report["archive"]["kept"][0]["keep"], "doctrine.md")
@@ -658,7 +653,7 @@ class AssembleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             live_root, live = self._project(root, {"old.md": note("old", body="Old.")})
-            (live / "MEMORY.md").write_text("- [Old](old.md)\n")
+            (live / "MEMORY.md").write_text("- [Old](old.md)\n", encoding="utf-8", newline="\n")
             proposals = [{
                 "id": "p1", "project": "proj", "action": "period-close", "survivor": "new.md",
                 "sources": [], "results": [{"path": "new.md", "content": note("new", body="New.")}],
@@ -675,7 +670,7 @@ class ConfinementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             memory = Path(temp) / "memory"
             memory.mkdir()
-            (memory / "ok.md").write_text("x")
+            (memory / "ok.md").write_text("x", encoding="utf-8", newline="\n")
             outside = Path(temp) / "outside"
             outside.mkdir()
             (memory / "escape.md").symlink_to(outside / "target.md")
@@ -692,14 +687,14 @@ class ManifestIdTests(unittest.TestCase):
         live = root / "live" / "proj" / "memory"
         if not live.exists():
             live.mkdir(parents=True)
-            (live / "a.md").write_text(note("a", body="Fact."))
+            (live / "a.md").write_text(note("a", body="Fact."), encoding="utf-8", newline="\n")
         cluster = {"cluster_id": ASM.stable_id("proj", ["a.md"], "cluster"), "project": "proj", "top_score": 5,
                    "notes": [{"path": "a.md", "name": "a", "body": "Fact.", "score": 5, "supersessions": 0}]}
         plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-        (root / "plan.json").write_text(json.dumps(plan))
+        (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
         drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [
             {"action": "compress", "justification": "x", "survivor": {"path": "a.md", "content": survivor_body}, "deletes": []}]}]}
-        (root / "drafts.json").write_text(json.dumps(drafts))
+        (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
         out = root / "out"
         shutil.rmtree(out, ignore_errors=True)
         env = subprocess_env(root / "claude-config")
@@ -712,7 +707,7 @@ class ManifestIdTests(unittest.TestCase):
             env=env,
             check=True,
         )
-        return json.loads((out / "manifest.json").read_text())["id"]
+        return json.loads((out / "manifest.json").read_text(encoding="utf-8"))["id"]
 
     def test_manifest_id_is_content_bound(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -982,7 +977,7 @@ class SplitRedescribeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             live_root, live = self._project(root, {"mega.md": self.DONOR})
-            (live / "MEMORY.md").write_text("- [mega](mega.md): old hook that no longer routes\n")
+            (live / "MEMORY.md").write_text("- [mega](mega.md): old hook that no longer routes\n", encoding="utf-8", newline="\n")
             cluster = self._cluster(["mega.md"], live)
             drafts = {cluster["cluster_id"]: [self._split_draft()]}
             proposals, dropped = ASM.assemble_proposals([cluster], drafts, live_root, "2026-07-31")
@@ -1026,19 +1021,19 @@ class HardeningTests(unittest.TestCase):
         live_root, live = self._project(root, {"a.md": donor})
         cluster = self._cluster(["a.md"], live)
         plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-        (root / "plan.json").write_text(json.dumps(plan))
+        (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
         drafts = {"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [{
             "action": "compress", "justification": "compress it",
             "survivor": {"path": "a.md", "content": note("a", body="Durable fact only.")},
             "deletes": []}]}]}
-        (root / "drafts.json").write_text(json.dumps(drafts))
+        (root / "drafts.json").write_text(json.dumps(drafts), encoding="utf-8", newline="\n")
         return live_root, cluster
 
     def test_findings_gate_refuses_uncovered_cluster(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             live_root, _cluster_obj = self._compress_setup(root, note("a", body="Fact."))
-            (root / "findings.json").write_text(json.dumps({"clusters": {}}))  # no coverage
+            (root / "findings.json").write_text(json.dumps({"clusters": {}}), encoding="utf-8", newline="\n")  # no coverage
             result = self._build_cli(root, live_root, root / "out")
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("verification-coverage gate", result.stderr)
@@ -1048,9 +1043,7 @@ class HardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             live_root, cluster = self._compress_setup(root, note("a", body="Fact."))
-            (root / "findings.json").write_text(
-                json.dumps({"clusters": {cluster["cluster_id"]: {"status": "pending"}}})
-            )
+            (root / "findings.json").write_text(json.dumps({"clusters": {cluster["cluster_id"]: {"status": "pending"}}}), encoding="utf-8", newline="\n")
             result = self._build_cli(root, live_root, root / "out")
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("verification-coverage gate", result.stderr)
@@ -1061,9 +1054,7 @@ class HardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             live_root, cluster = self._compress_setup(root, note("a", body="Fact."))
-            (root / "findings.json").write_text(
-                json.dumps({"clusters": {cluster["cluster_id"]: {"status": "clean"}}})
-            )
+            (root / "findings.json").write_text(json.dumps({"clusters": {cluster["cluster_id"]: {"status": "clean"}}}), encoding="utf-8", newline="\n")
             result = self._build_cli(root, live_root, root / "out")
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("verification-coverage gate", result.stderr)
@@ -1076,11 +1067,9 @@ class HardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             live_root, cluster = self._compress_setup(root, note("a", body="Fact."))
-            (root / "findings.json").write_text(
-                json.dumps({"clusters": {cluster["cluster_id"]: {
-                    "status": "clean", "drafts_digest": "0" * 16,
-                }}})
-            )
+            (root / "findings.json").write_text(json.dumps({"clusters": {cluster["cluster_id"]: {
+                "status": "clean", "drafts_digest": "0" * 16,
+            }}}), encoding="utf-8", newline="\n")
             result = self._build_cli(root, live_root, root / "out")
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("verification-coverage gate", result.stderr)
@@ -1107,7 +1096,7 @@ class HardeningTests(unittest.TestCase):
             root = Path(temp)
             live_root, _cluster = self._compress_setup(root, note("a", body="Fact."))
             write_findings(root)  # findings bound to the ORIGINAL drafts payload
-            (live_root / "proj" / "memory" / "a.md").write_text(note("a", body="Fact changed after plan."))
+            (live_root / "proj" / "memory" / "a.md").write_text(note("a", body="Fact changed after plan."), encoding="utf-8", newline="\n")
             result = self._build_cli(root, live_root, root / "out")
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("source notes changed since plan", result.stderr)
@@ -1202,16 +1191,14 @@ class HardeningTests(unittest.TestCase):
             index_lines = ["- [mega](mega.md) — old hook"]
             for i in range(130):
                 stem = f"filler-{i:03d}"
-                (live / f"{stem}.md").write_text(note(stem, body="Filler."))
+                (live / f"{stem}.md").write_text(note(stem, body="Filler."), encoding="utf-8", newline="\n")
                 index_lines.append(f"- [{stem}]({stem}.md) — " + "y" * 180)
-            (live / "MEMORY.md").write_text("\n".join(index_lines) + "\n")
+            (live / "MEMORY.md").write_text("\n".join(index_lines) + "\n", encoding="utf-8", newline="\n")
             cluster = self._cluster(["mega.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             draft = SplitRedescribeTests._split_draft(SplitRedescribeTests())
-            (root / "drafts.json").write_text(
-                json.dumps({"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [draft]}]})
-            )
+            (root / "drafts.json").write_text(json.dumps({"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [draft]}]}), encoding="utf-8", newline="\n")
             write_findings(root)
             refused = self._build_cli(root, live_root, root / "out1")
             self.assertEqual(refused.returncode, 2, refused.stderr)
@@ -1219,7 +1206,7 @@ class HardeningTests(unittest.TestCase):
             self.assertFalse((root / "out1" / "manifest.json").exists())
             allowed = self._build_cli(root, live_root, root / "out2", extra=("--allow-index-growth",))
             self.assertEqual(allowed.returncode, 0, allowed.stderr)
-            report = json.loads((root / "out2" / "report.json").read_text())
+            report = json.loads((root / "out2" / "report.json").read_text(encoding="utf-8"))
             self.assertTrue(report["index_over_cap"])
 
     def test_index_growth_refused_on_line_growth_when_bytes_shrink(self):
@@ -1233,7 +1220,7 @@ class HardeningTests(unittest.TestCase):
             index_lines = ["- [mega](mega.md): old hook that no longer routes"]
             for i in range(201):
                 stem = f"filler-{i:03d}"
-                (live / f"{stem}.md").write_text(note(stem, body="Filler."))
+                (live / f"{stem}.md").write_text(note(stem, body="Filler."), encoding="utf-8", newline="\n")
                 index_lines.append(f"- [{stem}]({stem}.md)")
             # A single long dead-reference line: reconcile drops it whole, which by
             # itself SHRINKS total bytes more than the two short appended entries add.
@@ -1242,14 +1229,12 @@ class HardeningTests(unittest.TestCase):
             current_lines = len(index_lines)
             self.assertGreater(current_lines, config.INDEX_LOAD_MAX_LINES)  # over cap by LINES
             self.assertLess(current_bytes, config.INDEX_LOAD_MAX_BYTES)  # NOT over cap by bytes
-            (live / "MEMORY.md").write_text("\n".join(index_lines) + "\n")
+            (live / "MEMORY.md").write_text("\n".join(index_lines) + "\n", encoding="utf-8", newline="\n")
             cluster = self._cluster(["mega.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             draft = SplitRedescribeTests._split_draft(SplitRedescribeTests())
-            (root / "drafts.json").write_text(
-                json.dumps({"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [draft]}]})
-            )
+            (root / "drafts.json").write_text(json.dumps({"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [draft]}]}), encoding="utf-8", newline="\n")
             write_findings(root)
             refused = self._build_cli(root, live_root, root / "out1")
             self.assertEqual(refused.returncode, 2, refused.stderr)
@@ -1268,7 +1253,7 @@ class HardeningTests(unittest.TestCase):
             })
             cluster = self._cluster(["mega.md"], live)
             plan = {"schema_version": 1, "clusters": [cluster], "deferred": [], "manual_review": []}
-            (root / "plan.json").write_text(json.dumps(plan))
+            (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8", newline="\n")
             survivor = (
                 "---\nname: mega\ndescription: core topic after the split rewrite\n"
                 "metadata:\n  type: project\n---\nCore topic. See [[snake_extract]].\n"
@@ -1282,14 +1267,12 @@ class HardeningTests(unittest.TestCase):
                 }],
                 "deletes": [],
             }
-            (root / "drafts.json").write_text(
-                json.dumps({"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [draft]}]})
-            )
+            (root / "drafts.json").write_text(json.dumps({"clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [draft]}]}), encoding="utf-8", newline="\n")
             write_findings(root)
             result = self._build_cli(root, live_root, root / "out")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("casing drift", result.stderr)
-            report = json.loads((root / "out" / "report.json").read_text())
+            report = json.loads((root / "out" / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 [d["path"] for d in report["casing_drift"]], ["snake_extract.md"]
             )
