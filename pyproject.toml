@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memory-dream"
-version = "0.1.1"
+version = "0.2.0"
 description = "Operator-gated consolidation and recall evaluation for Claude Code auto-memory: triage rot deterministically, draft with a zero-tool subagent, approve item by item, apply through a gate stack that refuses rather than guesses."
 readme = "README.md"
 requires-python = ">=3.10"
