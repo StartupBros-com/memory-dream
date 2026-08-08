@@ -128,6 +128,20 @@ that's what the operator is meant to review. Do not point memory-dream at a
 memory root, or run it on a machine, shared with another party you do not
 fully trust with the contents of your memory store.
 
+## Do not point generic cleanup tools at memory
+
+A memory mirror repo looks like an ordinary repository of markdown files,
+which makes it a tempting target for generic repo-cleanup or PR-writing
+tools (dead-doc sweeps, de-duplication passes, autonomous cleanup agents
+such as token-eater). Do not do this. Any tool that edits notes by a route
+other than the gated `apply` bypasses this pipeline's entire reason to
+exist: schema validation, path confinement, the sensitive-content scan,
+zero-tool drafting, operator consent, and the recall eval that checks
+routing survived. A cleanup PR against a mirror can be individually reviewed
+and still silently break recall — that failure mode is invisible in a diff,
+which is why the eval exists. Semantic changes to memory go through
+`/memory-dream:dream`, or not at all.
+
 ## Reporting a vulnerability
 
 Report security issues through this repository's GitHub Security

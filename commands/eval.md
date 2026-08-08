@@ -160,6 +160,24 @@ the previous run sharing this suite AND fingerprint (deltas under 2 points are
 judge noise — say so). Never quote note bodies in the report; paths and scores
 only.
 
+**If the skill-tuner plugin is installed** (its `/skill-tuner:tune` skill is
+available in this session), upgrade that rule of thumb to a real verdict.
+Export the two runs:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" eval export-paired \
+  --baseline <previous-run-id> --candidate <this-run-id>
+```
+
+then run skill-tuner's comparison on the two files it writes, stating the
+noise rule as the non-inferiority margin
+(`compare --paired-json --baseline .../paired-baseline.json
+--candidate .../paired-candidate.json --delta 2.0`), and report its four-way
+verdict (better / not_worse / worse / inconclusive) with the confidence
+interval INSTEAD of the rule of thumb. Without skill-tuner installed, the
+rule of thumb above stands unchanged — nothing in this stage degrades; the
+delta line just stays a heuristic.
+
 ## Stage 7: forward suite (measuring the benefit, not just preservation)
 
 A suite frozen BEFORE a consolidation can only prove the pass did not break

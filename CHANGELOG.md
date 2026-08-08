@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.0 — 2026-08-08
+
+Suite integration, strictly additive: everything below is stdlib-only and
+inert unless a sibling plugin is installed. Standalone behavior is unchanged.
+
+- **New**: `eval export-paired` emits two flat `{question_id: score}` JSON
+  files with identical key sets from two scored runs (suite identity
+  checked, questions broken in either run excluded as suite decay,
+  unpaired ids dropped — all exclusions summarized, never silent). The
+  output is the input shape of generic paired-comparison tools.
+- **Docs**: when skill-tuner (same marketplace) is installed, the eval
+  report upgrades its "deltas under 2 points are judge noise" rule of thumb
+  to skill-tuner's statistical verdict — the noise rule becomes a stated
+  non-inferiority margin with a confidence interval. Without skill-tuner
+  the heuristic stands verbatim.
+- **Docs**: SECURITY.md now warns explicitly against pointing generic
+  repo-cleanup or PR-writing tools at a memory mirror — that route bypasses
+  every apply gate, and the failure it causes is invisible in a diff.
+- **Docs**: mirror-mode notes that a PR-review plugin (e.g. pro-gate)
+  composes well on the mirror draft PR, as a complement to the gates.
+
 ## v0.1.1 — 2026-08-08
 
 Windows correctness release; no behavior change on POSIX.

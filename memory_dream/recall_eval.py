@@ -637,6 +637,97 @@ def run_discriminability(args: argparse.Namespace) -> int:
 # --- CLI ---------------------------------------------------------------------
 
 
+def run_export_paired(args: argparse.Namespace) -> int:
+    """Export two runs as flat {question_id: score} files with identical key
+    sets, ready for any external paired-comparison tool.
+
+    Every memory-dream semantic stays on this side of the seam: the suite
+    identity check, the broken-in-either-run (suite decay) exclusion, and the
+    unpaired-id drop all happen here, so the consumer receives pure numbers
+    and refuses only on its own generic walls (key mismatch, minimum n).
+    """
+    runs_dir = Path(args.runs_dir).expanduser()
+
+    def load_run(label: str, ref: str) -> dict[str, Any] | None:
+        path = Path(ref).expanduser()
+        if not path.is_file():
+            path = runs_dir / f"run-{ref}.json"
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(
+                f"memory-dream eval export-paired: cannot read {label} run {ref}: {error}",
+                file=sys.stderr,
+            )
+            return None
+
+    baseline = load_run("baseline", args.baseline)
+    candidate = load_run("candidate", args.candidate)
+    if baseline is None or candidate is None:
+        return 2
+    if baseline.get("suite_id") != candidate.get("suite_id"):
+        print(
+            "memory-dream eval export-paired: runs are from different suites; refusing the pairing",
+            file=sys.stderr,
+        )
+        return 2
+    base_fp = baseline.get("fingerprint", "")
+    cand_fp = candidate.get("fingerprint", "")
+    if base_fp and cand_fp and base_fp != cand_fp:
+        print(
+            "memory-dream eval export-paired: WARN fingerprints differ; scores may not be comparable",
+            file=sys.stderr,
+        )
+
+    base_records = {r["id"]: r for r in baseline.get("records", [])}
+    cand_records = {r["id"]: r for r in candidate.get("records", [])}
+    decayed = 0
+    base_scores: dict[str, float] = {}
+    cand_scores: dict[str, float] = {}
+    for qid in sorted(set(base_records) & set(cand_records)):
+        before, after = base_records[qid], cand_records[qid]
+        # Broken in either run is suite decay (the anchor no longer exists
+        # verbatim), not a routing flip -- same rule as run_score's paired
+        # readout, applied here so no consumer has to know it.
+        if before.get("verdict") == "broken" or after.get("verdict") == "broken":
+            decayed += 1
+            continue
+        base_scores[qid] = float(before["score"])
+        cand_scores[qid] = float(after["score"])
+    baseline_only = len(set(base_records) - set(cand_records))
+    candidate_only = len(set(cand_records) - set(base_records))
+
+    if not base_scores:
+        print(
+            "memory-dream eval export-paired: no scoreable overlapping questions; nothing to export",
+            file=sys.stderr,
+        )
+        return 2
+
+    out_dir = Path(args.out_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, scores in (
+        ("paired-baseline.json", base_scores),
+        ("paired-candidate.json", cand_scores),
+    ):
+        AUDIT.atomic_write(
+            out_dir / name, (json.dumps(scores, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        )
+    print(
+        f"export-paired: {len(base_scores)} pairs -> {out_dir} "
+        f"({decayed} decayed excluded, {baseline_only} baseline-only, "
+        f"{candidate_only} candidate-only dropped)",
+        file=sys.stderr,
+    )
+    if len(base_scores) < 3:
+        print(
+            "export-paired: NOTE fewer than 3 pairs; paired-comparison tools will refuse",
+            file=sys.stderr,
+        )
+    print(json.dumps({"pairs": len(base_scores), "out_dir": str(out_dir)}, sort_keys=True))
+    return 0
+
+
 def add_parsers(subparsers) -> None:
     """Register the single top-level `eval` subcommand and its nested
     sample/freeze/routing-input/score/discriminability subcommands."""
@@ -689,6 +780,25 @@ def add_parsers(subparsers) -> None:
     score.add_argument("--baseline", default="", help="run id for the paired-flip comparison (primary readout)")
     score.add_argument("--out-dir", default=str(config.eval_home() / "runs"))
     score.set_defaults(func=run_score)
+
+    export = eval_sub.add_parser(
+        "export-paired",
+        help="export two scored runs as flat {question_id: score} files for external paired-comparison tools",
+    )
+    export.add_argument(
+        "--baseline", required=True,
+        help="baseline run: a path to a run-<id>.json or a bare run id resolved in --runs-dir",
+    )
+    export.add_argument("--candidate", required=True, help="candidate run: a path or bare run id")
+    export.add_argument(
+        "--runs-dir", default=str(config.eval_home() / "runs"),
+        help="where bare run ids resolve (default: <eval-home>/runs)",
+    )
+    export.add_argument(
+        "--out-dir", default=str(config.eval_home() / "paired"),
+        help="where paired-baseline.json and paired-candidate.json are written",
+    )
+    export.set_defaults(func=run_export_paired)
 
     disc = eval_sub.add_parser(
         "discriminability",
