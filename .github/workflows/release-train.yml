@@ -1,66 +1,18 @@
 name: Release train
 
+# Announce-only Tool Drop train, shared across the whole hov catalog.
+# All logic lives in hov-marketplace (the catalog announces itself);
+# identity is the workflow's OIDC token — no shared secret, no per-repo
+# scoping. Bump the pin when the reusable workflow changes.
+
 on:
   release:
     types: [published, edited]
 
 permissions:
   contents: read
-
-concurrency:
-  group: release-train-memory-dream
-  cancel-in-progress: false
+  id-token: write
 
 jobs:
   announce:
-    if: github.event.release.draft == false && github.event.release.prerelease == false
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out release commit
-        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
-        with:
-          ref: ${{ github.event.release.tag_name }}
-          fetch-depth: 0
-          persist-credentials: false
-      # AFTER this ancestry check, never before: later steps execute a script from the
-      # CHECKED-OUT TAG, so running tag-sourced code earlier would let anyone able to push
-      # a tag execute arbitrary code in a job that handles the announcement secret. Every
-      # tag-sourced executable must sit below the proof that the tag descends from the
-      # protected default branch.
-      - name: Require release commit on default branch
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          git fetch origin "$DEFAULT_BRANCH"
-          release_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
-          git merge-base --is-ancestor "$release_sha" "origin/$DEFAULT_BRANCH"
-
-      - name: Resolve latest stable release
-        id: stable
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
-          test -n "$latest_id"
-          echo "id=$latest_id" >> "$GITHUB_OUTPUT"
-
-      - name: Announce release
-        env:
-          EVENT_ACTION: ${{ github.event.action }}
-          REPOSITORY: memory-dream
-          RELEASE_ID: ${{ github.event.release.id }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_NAME: ${{ github.event.release.name || github.event.release.tag_name }}
-          RELEASE_URL: ${{ github.event.release.html_url }}
-          RELEASE_NOTES: ${{ github.event.release.body }}
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-          RELEASE_DRAFT: ${{ github.event.release.draft }}
-          LATEST_STABLE_ID: ${{ steps.stable.outputs.id }}
-          SOURCE_ROOT: ${{ github.workspace }}
-          ANNOUNCE_URL: ${{ vars.TOOL_RELEASE_ANNOUNCE_URL }}
-          ANNOUNCE_SECRET: ${{ secrets.TOOL_RELEASE_ANNOUNCE_SECRET }}
-        run: |
-          source_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
-          export SOURCE_SHA="$source_sha"
-          ./scripts/release-train.sh
+    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@c981b872ebf650805200ad72c8b7142232f8b3f6 # feat: marketplace as Tool Drop source of truth
