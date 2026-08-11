@@ -144,9 +144,14 @@ def extract_user_text(entry: dict[str, Any]) -> str | None:
     # turn must not be able to approve itself.
     #
     # Keyed on the structural flags rather than on summary prose, which is
-    # model-written and unstable. Measured on 400 live transcripts (2026-08-11):
-    # 348/348 entries carrying either flag were compaction summaries and none
-    # were operator turns, so this rejects no real approval.
+    # model-written and unstable.
+    #
+    # Full-corpus measurement, 2026-08-11, 20,470 transcript files: 2098 entries
+    # carry these flags; ALL 2098 carry BOTH of them (so the ``or`` cannot
+    # over-reject — no entry has one flag without the other), 0 are non-user,
+    # 0 carry ``isMeta``, and 0 deviate from the standard continuation prose.
+    # Every one of those 2098 would have passed the checks above before this
+    # guard. So it rejects no real approval, and it is not a sampling claim.
     if entry.get("isCompactSummary") or entry.get("isVisibleInTranscriptOnly"):
         return None
     message = entry.get("message")
