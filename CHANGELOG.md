@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- **Fix (consent gate)**: a compaction summary can no longer stand in for an
+  operator approval. Claude Code writes its post-compaction continuation turn
+  as `type == "user"` / `role == "user"` with no `isMeta`, so it passed every
+  structural check in `extract_user_text`. Because the summarizer quotes prior
+  conversation verbatim and `trace` scans backward from the end of the
+  transcript, a compaction landing between "preview generated" and "operator
+  approves" could reproduce the approval token in a turn no human typed — and
+  that synthetic turn would be *preferred* over a genuine earlier approval.
+  That is exactly the property the gate exists to guarantee. Now rejected on
+  the `isCompactSummary` / `isVisibleInTranscriptOnly` flags rather than on
+  model-written prose; measured across 400 live transcripts, 348/348 entries
+  carrying either flag were summaries and none were operator turns, so no real
+  approval is refused.
+- **New**: `plan` and `trace` accept `--out-file PATH`, writing their JSON
+  there instead of stdout. The documented pass captured them with
+  `> "$SCRATCH/..."`, and a shell redirect to a variable target cannot be
+  statically proven safe, so agent command guards refuse it — which halted the
+  documented pass at its first step. `commands/dream.md` now uses the flag.
+  Spelled `--out-file`, not `--out`, because `build`/`archive` already use
+  `--out` for an output *directory*. Stdout behavior without the flag is
+  unchanged.
+
 ## v0.2.0 — 2026-08-08
 
 Suite integration, strictly additive: everything below is stdlib-only and

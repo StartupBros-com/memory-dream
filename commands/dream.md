@@ -83,7 +83,7 @@ Otherwise continue. If `$ARGUMENTS` names a project, filter to it.
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" plan \
-  --shards-dir "$SCRATCH/dream-shards" > "$SCRATCH/dream-plan.json"
+  --shards-dir "$SCRATCH/dream-shards" --out-file "$SCRATCH/dream-plan.json"
 ```
 
 **Token discipline:** point each drafter at its own shard
@@ -528,7 +528,8 @@ must carry the manifest `id` token) and write the selection:
 ```bash
 PATCH_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$PS/manifest.json")
 python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" trace \
-  --transcript "$TRANSCRIPT" --created-at-line "$CREATED_AT" --token "$PATCH_ID" > "$SCRATCH/trace.json"
+  --transcript "$TRANSCRIPT" --created-at-line "$CREATED_AT" --token "$PATCH_ID" \
+  --out-file "$SCRATCH/trace.json"
 # selection.json = {"approved": [<approved ids>], "operator_trace": <trace.json>,
 #                   "patch_set_id": "$PATCH_ID"}
 ```

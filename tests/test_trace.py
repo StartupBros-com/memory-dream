@@ -98,6 +98,68 @@ class TraceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("no post-preview operator turn", result.stderr)
 
+    # Claude Code's post-compaction turn is type=="user"/role=="user" with no
+    # isMeta, so every structural check bar the new one passes it. The
+    # summarizer quotes prior conversation verbatim, so it can carry the
+    # approval token without a human ever typing it.
+    _COMPACTION_TURN = {
+        "type": "user",
+        "isCompactSummary": True,
+        "isVisibleInTranscriptOnly": True,
+        "message": {
+            "role": "user",
+            "content": (
+                "This session is being continued from a previous conversation that ran out of "
+                "context. The user was shown patch set ps-42 and replied: approve all ps-42"
+            ),
+        },
+    }
+
+    def test_compaction_summary_cannot_stand_in_for_approval(self):
+        """A compaction between preview and approval must not approve the pass."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            transcript = self._transcript(
+                root,
+                {"type": "user", "message": {"role": "user", "content": "run it"}},
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "preview ps-42"}]}},
+                self._COMPACTION_TURN,
+            )
+            env = subprocess_env(root / "claude-config")
+            result = run_cli(
+                "trace",
+                "--transcript", str(transcript), "--created-at-line", "2",
+                "--token", "ps-42",
+                env=env,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("no post-preview operator turn", result.stderr)
+
+    def test_compaction_summary_does_not_outrank_a_real_approval(self):
+        """run_trace scans backward, so a later summary must not win over a human turn."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            transcript = self._transcript(
+                root,
+                {"type": "user", "message": {"role": "user", "content": "run it"}},
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "preview ps-42"}]}},
+                {"type": "user", "message": {"role": "user", "content": "approve all ps-42"}},
+                self._COMPACTION_TURN,
+            )
+            env = subprocess_env(root / "claude-config")
+            result = run_cli(
+                "trace",
+                "--transcript", str(transcript), "--created-at-line", "2",
+                "--token", "ps-42",
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            trace = json.loads(result.stdout)
+            self.assertEqual(trace["turn_index"], 2, "must select the human turn, not the later summary")
+            self.assertEqual(
+                trace["message_sha256"], hashlib.sha256(b"approve all ps-42").hexdigest()
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
