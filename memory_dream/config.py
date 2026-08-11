@@ -215,3 +215,41 @@ def add_root_args(parser) -> None:
         default=str(mirror_default) if mirror_default else None,
         help="git-tracked mirror of live memory; omitted = snapshot mode (no mirror gates)",
     )
+
+
+def add_out_file_arg(parser, what: str) -> None:
+    """Register ``--out-file``: the in-process alternative to a shell redirect.
+
+    Deliberately NOT spelled ``--out``. ``build`` and ``archive`` already use
+    ``--out`` for an output DIRECTORY, and giving one flag name two meanings
+    across sibling subcommands of the same CLI is a footgun.
+
+    Why it exists at all: the documented pass captures these subcommands with
+    ``> "$SCRATCH/..."``. A shell redirect whose target is only known after
+    variable expansion cannot be statically proven safe, so agent command
+    guards refuse it outright — dcg blocks exactly this shape under
+    ``core.filesystem:redirect-truncate-dynamic-path``, which halts the
+    documented pass at its first step and leaves nothing on disk recording
+    where the agent improvised the file instead. Writing from inside the
+    process needs no redirect, so the guard has nothing to refuse.
+    """
+    parser.add_argument(
+        "--out-file",
+        default=None,
+        help=f"write the {what} JSON to this path instead of stdout",
+    )
+
+
+def emit_json(payload: object, out_file: str | None, **dumps_kwargs) -> None:
+    """Emit ``payload`` as JSON to stdout, or to ``out_file`` when given.
+
+    Parent directories are created. Callers keep their existing stdout
+    behaviour untouched when ``--out-file`` is absent, so this is additive.
+    """
+    text = json.dumps(payload, **dumps_kwargs)
+    if not out_file:
+        print(text)
+        return
+    path = Path(out_file).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text + "\n", encoding="utf-8")

@@ -215,7 +215,7 @@ def run_plan(args: argparse.Namespace) -> int:
     # own cluster (measured during the authors' consolidation campaign: early
     # drafters given a single-line dump burned 30+ tool calls each on that
     # reconstruction).
-    print(json.dumps(plan, sort_keys=True, indent=1))
+    config.emit_json(plan, getattr(args, "out_file", None), sort_keys=True, indent=1)
     # Token shaping, not a behavior change: with shards, each drafter reads only
     # its own cluster (~1/N of the plan) instead of every cluster's note bodies.
     # Defaults under the session scratch dir so it is never left unset by
@@ -1370,6 +1370,7 @@ def _add_plan_parser(subparsers) -> None:
     )
     p.add_argument("--max-clusters", type=int, default=config.TRIAGE_MAX_CLUSTERS)
     p.add_argument("--max-notes", type=int, default=config.TRIAGE_MAX_NOTES_PER_CLUSTER)
+    config.add_out_file_arg(p, "plan")
     p.set_defaults(func=run_plan)
 
 

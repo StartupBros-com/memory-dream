@@ -116,8 +116,9 @@ def schema_probe(transcripts_dir: Path) -> str:
 def extract_user_text(entry: dict[str, Any]) -> str | None:
     """Return the human-typed text of a transcript entry, or None if it is not one.
 
-    Tool results, assistant turns, meta entries, and CLI wrapper-tag content
-    all return None: only genuine operator-typed prose can carry consent.
+    Tool results, assistant turns, meta entries, compaction summaries, and CLI
+    wrapper-tag content all return None: only genuine operator-typed prose can
+    carry consent.
 
     An entry that looks like a real operator turn (``type == "user"``, not
     ``isMeta``) but whose ``message`` payload matches neither known content
@@ -126,6 +127,32 @@ def extract_user_text(entry: dict[str, Any]) -> str | None:
     instead of silently returning None — see the module docstring.
     """
     if entry.get("type") != "user" or entry.get("isMeta"):
+        return None
+    # Claude Code's post-compaction continuation turn is written to the
+    # transcript as ``type == "user"`` with ``role == "user"`` and NO
+    # ``isMeta``, so every check above passes it. Its text is model-written
+    # prose summarizing the conversation that was just dropped.
+    #
+    # Why this is a consent bug and not a cosmetic one: the summarizer quotes
+    # prior conversation verbatim, and ``run_trace`` scans BACKWARD from the
+    # end of the transcript for the most recent turn carrying the approval
+    # token. So a compaction landing between "preview generated" and "operator
+    # approves" can reproduce the token inside a turn no human typed, and that
+    # synthetic turn is then PREFERRED over a genuine earlier approval because
+    # it is later in the file. That is precisely the property this gate exists
+    # to guarantee: a pass that drafts and applies with no post-preview human
+    # turn must not be able to approve itself.
+    #
+    # Keyed on the structural flags rather than on summary prose, which is
+    # model-written and unstable.
+    #
+    # Full-corpus measurement, 2026-08-11, 20,470 transcript files: 2098 entries
+    # carry these flags; ALL 2098 carry BOTH of them (so the ``or`` cannot
+    # over-reject — no entry has one flag without the other), 0 are non-user,
+    # 0 carry ``isMeta``, and 0 deviate from the standard continuation prose.
+    # Every one of those 2098 would have passed the checks above before this
+    # guard. So it rejects no real approval, and it is not a sampling claim.
+    if entry.get("isCompactSummary") or entry.get("isVisibleInTranscriptOnly"):
         return None
     message = entry.get("message")
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -195,7 +222,7 @@ def run_trace(args: argparse.Namespace) -> int:
         # incidental post-preview turn is never mistaken for approval.
         if text is not None and (not args.token or args.token in text):
             trace = {"message_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "turn_index": index}
-            print(json.dumps(trace, sort_keys=True))
+            config.emit_json(trace, getattr(args, "out_file", None), sort_keys=True)
             return 0
     print("memory-dream trace: no post-preview operator turn carrying the approval token; cannot approve", file=sys.stderr)
     return 1
@@ -231,6 +258,7 @@ def add_parsers(subparsers) -> None:
     trace.add_argument("--transcript", required=True, help="session transcript .jsonl to scan")
     trace.add_argument("--created-at-line", type=int, default=0, help="scan stops here: the preview's line count")
     trace.add_argument("--token", default="", help="approval token the human turn must contain (the manifest id)")
+    config.add_out_file_arg(trace, "operator_trace")
     trace.set_defaults(func=run_trace)
 
     locate = subparsers.add_parser(
