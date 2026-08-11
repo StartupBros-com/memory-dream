@@ -15,4 +15,4 @@ permissions:
 
 jobs:
   announce:
-    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@c981b872ebf650805200ad72c8b7142232f8b3f6 # feat: marketplace as Tool Drop source of truth
+    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@08f7d22f3a5b59b1658ab2e96a20d0d3c352869c # fix: bind Tool Drop intent to the promoted release
