@@ -32,7 +32,9 @@ def validate_release_train(workflow: str) -> None:
 
 class TestReleaseTrainPolicy(unittest.TestCase):
     def test_checked_in_workflow_is_canonical(self):
-        workflow = (REPO_ROOT / ".github/workflows/release-train.yml").read_text()
+        workflow = (REPO_ROOT / ".github/workflows/release-train.yml").read_text(
+            encoding="utf-8"
+        )
         validate_release_train(workflow)
 
     def test_retired_pin_is_rejected(self):
