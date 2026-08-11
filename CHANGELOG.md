@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.1 — 2026-08-11
 
 - **Fix (consent gate)**: a compaction summary can no longer stand in for an
   operator approval. Claude Code writes its post-compaction continuation turn
