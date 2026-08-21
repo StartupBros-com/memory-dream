@@ -430,6 +430,82 @@ class ConfigResolutionTests(unittest.TestCase):
             self.assertIsNone(config.default_mirror_root())
 
 
+class ConfigNonDefaultValuesTests(unittest.TestCase):
+    """config.non_default_values(): every _OVERRIDABLE name whose live value
+    differs from its shipped default (config._DEFAULTS), with source
+    attribution following the same env-beats-file precedence
+    _apply_env_overrides()/load_file_config() already enforce."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        stripped = _strip_leaky_keys(os.environ)
+        os.environ.clear()
+        os.environ.update(stripped)
+        self._merge_jaccard_backup = config.MERGE_JACCARD
+        self._file_config_loaded_backup = config._FILE_CONFIG_LOADED
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        config.MERGE_JACCARD = self._merge_jaccard_backup
+        config._FILE_CONFIG_LOADED = self._file_config_loaded_backup
+
+    def test_no_overrides_reports_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()
+            os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+            self.assertEqual(config.non_default_values(), {})
+
+    def test_env_override_reports_env_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()
+            os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+            os.environ["MEMORY_DREAM_MERGE_JACCARD"] = "0.9"
+            config._FILE_CONFIG_LOADED = False
+            config.load_file_config()
+            overrides = config.non_default_values()
+            self.assertIn("MERGE_JACCARD", overrides)
+            current, default, source = overrides["MERGE_JACCARD"]
+            self.assertEqual(current, 0.9)
+            self.assertEqual(default, config._DEFAULTS["MERGE_JACCARD"])
+            self.assertIn("MEMORY_DREAM_MERGE_JACCARD", source)
+
+    def test_file_override_reports_file_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()
+            (claude_dir / "memory-dream.json").write_text(
+                json.dumps({"merge_jaccard": 0.75}), encoding="utf-8", newline="\n"
+            )
+            os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+            config._FILE_CONFIG_LOADED = False
+            config.load_file_config()
+            overrides = config.non_default_values()
+            self.assertIn("MERGE_JACCARD", overrides)
+            current, default, source = overrides["MERGE_JACCARD"]
+            self.assertEqual(current, 0.75)
+            self.assertIn("merge_jaccard", source)
+            self.assertNotIn("MEMORY_DREAM_MERGE_JACCARD", source)
+
+    def test_env_wins_over_file_for_source_naming(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()
+            (claude_dir / "memory-dream.json").write_text(
+                json.dumps({"merge_jaccard": 0.75}), encoding="utf-8", newline="\n"
+            )
+            os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+            os.environ["MEMORY_DREAM_MERGE_JACCARD"] = "0.9"
+            config._FILE_CONFIG_LOADED = False
+            config.load_file_config()
+            overrides = config.non_default_values()
+            current, default, source = overrides["MERGE_JACCARD"]
+            self.assertEqual(current, 0.9)
+            self.assertIn("MEMORY_DREAM_MERGE_JACCARD", source)
+
+
 # =============================================================================
 # 5. compat.FileLock
 # =============================================================================
@@ -727,6 +803,32 @@ class IndexCapCheckTests(unittest.TestCase):
         self.assertIn("unverifiable", detail.lower())
 
 
+class ConfigOverridesCheckTests(unittest.TestCase):
+    """cli._config_overrides_check: the doctor "config overrides"
+    (label, ok, detail, fatal) tuple, built from an already-computed
+    config.non_default_values() mapping so the summary formatting is
+    directly unit-testable without mutating real config state."""
+
+    def test_empty_overrides_reports_all_default(self):
+        label, ok, detail, fatal = cli._config_overrides_check({})
+        self.assertEqual(label, "config overrides")
+        self.assertTrue(ok)
+        self.assertFalse(fatal)
+        self.assertIn("none", detail)
+        self.assertIn("all defaults", detail)
+
+    def test_overrides_listed_with_source(self):
+        overrides = {"MERGE_JACCARD": (0.9, 0.5, "env:MEMORY_DREAM_MERGE_JACCARD")}
+        label, ok, detail, fatal = cli._config_overrides_check(overrides)
+        self.assertEqual(label, "config overrides")
+        self.assertTrue(ok)
+        self.assertFalse(fatal)
+        self.assertIn("MERGE_JACCARD", detail)
+        self.assertIn("0.9", detail)
+        self.assertIn("0.5", detail)
+        self.assertIn("MEMORY_DREAM_MERGE_JACCARD", detail)
+
+
 # =============================================================================
 # 9. compaction canary (transcript.compaction_canary)
 # =============================================================================
@@ -833,7 +935,74 @@ class CompactionCanaryTests(unittest.TestCase):
 
 
 # =============================================================================
-# 10. compatibility record single-source guard
+# 10. config overrides (doctor)
+# =============================================================================
+
+
+class DoctorConfigOverridesLineTests(unittest.TestCase):
+    """`doctor`'s "config overrides" advisory line: reports every config
+    value whose live value differs from its shipped default, naming the
+    override source (env var or JSON config key), env beating file per the
+    same resolution order load_file_config() enforces. Always advisory:
+    never affects doctor's exit code."""
+
+    def _healthy_env(self, temp: Path) -> tuple[dict, Path]:
+        claude_dir = Path(temp) / "claude-config"
+        (claude_dir / "projects").mkdir(parents=True)
+        return subprocess_env(claude_dir), claude_dir
+
+    def test_no_overrides_reports_all_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env, _ = self._healthy_env(Path(temp))
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "config overrides")
+            self.assertTrue(line.startswith("ok"), line)
+            self.assertIn("none", line)
+            self.assertIn("all defaults", line)
+
+    def test_env_override_listed_with_env_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env, _ = self._healthy_env(Path(temp))
+            env["MEMORY_DREAM_MERGE_JACCARD"] = "0.9"
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "config overrides")
+            self.assertIn("MERGE_JACCARD", line)
+            self.assertIn("0.9", line)
+            self.assertIn("MEMORY_DREAM_MERGE_JACCARD", line)
+
+    def test_file_override_listed_with_file_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env, claude_dir = self._healthy_env(Path(temp))
+            (claude_dir / "memory-dream.json").write_text(
+                json.dumps({"merge_jaccard": 0.75}), encoding="utf-8", newline="\n"
+            )
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "config overrides")
+            self.assertIn("MERGE_JACCARD", line)
+            self.assertIn("0.75", line)
+            self.assertIn("merge_jaccard", line)
+            self.assertNotIn("MEMORY_DREAM_MERGE_JACCARD", line)
+
+    def test_env_wins_over_file_for_source_naming(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env, claude_dir = self._healthy_env(Path(temp))
+            (claude_dir / "memory-dream.json").write_text(
+                json.dumps({"merge_jaccard": 0.75}), encoding="utf-8", newline="\n"
+            )
+            env["MEMORY_DREAM_MERGE_JACCARD"] = "0.9"
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "config overrides")
+            self.assertIn("MERGE_JACCARD", line)
+            self.assertIn("0.9", line)
+            self.assertIn("MEMORY_DREAM_MERGE_JACCARD", line)
+
+
+# =============================================================================
+# 11. compatibility record single-source guard
 # =============================================================================
 
 

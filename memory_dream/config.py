@@ -96,6 +96,12 @@ _OVERRIDABLE = {
     if name.isupper() and not name.startswith("_") and not isinstance(value, bool) and isinstance(value, (int, float, str, list))
 }
 
+# Snapshot of the shipped default for every _OVERRIDABLE name, captured here
+# -- before load_file_config()/_apply_env_overrides() mutate these same
+# globals in place -- so `doctor` can later diff the live value against what
+# actually shipped, no matter what the running process has already applied.
+_DEFAULTS: dict[str, object] = {name: globals()[name] for name in _OVERRIDABLE}
+
 
 def claude_config_dir() -> Path:
     """Base directory for Claude Code state (honors CLAUDE_CONFIG_DIR)."""
@@ -215,6 +221,34 @@ def load_file_config() -> None:
             f"(valid: mirror_root, mirror_push_hint, {', '.join(sorted(k.lower() for k in _OVERRIDABLE))})"
         )
     _apply_env_overrides()
+
+
+def non_default_values() -> dict[str, tuple[object, object, str]]:
+    """Every ``_OVERRIDABLE`` name whose live value no longer matches its
+    shipped default (``_DEFAULTS``), mapped to ``(current, default, source)``.
+
+    Source attribution mirrors the resolution order ``load_file_config()``
+    already enforces (env beats file): the env var is checked first, then
+    the JSON config file key. Neither set means the value was mutated some
+    other way (e.g. a test patching the module global directly); source is
+    reported as "unknown" in that case.
+    """
+    file_cfg = _file_config()
+    file_keys = {key.lower() for key in file_cfg}
+    result: dict[str, tuple[object, object, str]] = {}
+    for name, default in _DEFAULTS.items():
+        current = globals()[name]
+        if current == default:
+            continue
+        env_name = _ENV_PREFIX + name
+        if os.environ.get(env_name) is not None:
+            source = f"env:{env_name}"
+        elif name.lower() in file_keys:
+            source = f"file:{name.lower()}"
+        else:
+            source = "unknown"
+        result[name] = (current, default, source)
+    return result
 
 
 def add_root_args(parser) -> None:

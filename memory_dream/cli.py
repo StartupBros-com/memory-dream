@@ -133,6 +133,26 @@ def _compaction_canary_check(probe_result: tuple[str, str]) -> tuple[str, bool, 
     return ("compaction canary", status != "drift", detail, False)
 
 
+def _config_overrides_check(overrides: dict[str, tuple[object, object, str]]) -> tuple[str, bool, str, bool]:
+    """Build the doctor "config overrides" (label, ok, detail, fatal) tuple.
+
+    `overrides` is `config.non_default_values()`'s already-computed
+    name -> (current, default, source) mapping -- passed in rather than
+    computed here so the summary-line formatting is directly unit-testable
+    without mutating real config state. Always advisory (fatal=False, and
+    always ok=True): running with non-default tuning is a deliberate
+    operator or environment choice, not a fault -- this line exists so it's
+    visible, never to flag it as wrong.
+    """
+    if not overrides:
+        return ("config overrides", True, "none (all defaults)", False)
+    parts = [
+        f"{name}={current!r} (default {default!r}, via {source})"
+        for name, (current, default, source) in sorted(overrides.items())
+    ]
+    return ("config overrides", True, "; ".join(parts), False)
+
+
 def _run_doctor(args) -> int:
     import importlib.util
     import os
@@ -201,6 +221,8 @@ def _run_doctor(args) -> int:
         checks.append((f"{tool} (optional)", True, shutil.which(tool) or "not found — repo-grounding checks degrade to note-only", False))
 
     checks.append(_index_cap_check(_detect_installed_claude_version()))
+
+    checks.append(_config_overrides_check(config.non_default_values()))
 
     hard_failures = [c for c in checks if not c[1] and c[3]]
     advisories = [c for c in checks if not c[1] and not c[3]]
