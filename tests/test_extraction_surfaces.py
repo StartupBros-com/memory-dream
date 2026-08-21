@@ -1002,7 +1002,194 @@ class DoctorConfigOverridesLineTests(unittest.TestCase):
 
 
 # =============================================================================
-# 11. compatibility record single-source guard
+# 11. patch-set retention & preview-copy leftover (doctor)
+# =============================================================================
+
+
+class StalePatchSetsTests(unittest.TestCase):
+    """cli._stale_patch_sets: read-only discovery of patch-set directories
+    older than the retention window -- feeds the doctor "patch-set
+    retention" advisory. Never deletes anything."""
+
+    def test_missing_root_reports_no_stale_sets(self):
+        missing = Path(tempfile.gettempdir()) / "mem-dream-retention-test-missing-xyz"
+        self.assertEqual(cli._stale_patch_sets(missing, 90), [])
+
+    def test_empty_root_reports_no_stale_sets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertEqual(cli._stale_patch_sets(Path(temp), 90), [])
+
+    def test_dir_older_than_window_is_stale_and_untouched(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            old = root / "2026-01-01-ps"
+            old.mkdir()
+            (old / "preview.html").write_text("stale", encoding="utf-8")
+            old_time = time.time() - 91 * 86400
+            os.utime(old, (old_time, old_time))
+            stale = cli._stale_patch_sets(root, 90)
+            self.assertEqual(stale, [old])
+            # advisory only -- nothing deleted
+            self.assertTrue(old.is_dir())
+            self.assertTrue((old / "preview.html").is_file())
+
+    def test_dir_within_window_is_not_stale(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            recent = root / "2026-08-01-ps"
+            recent.mkdir()
+            recent_time = time.time() - 10 * 86400
+            os.utime(recent, (recent_time, recent_time))
+            self.assertEqual(cli._stale_patch_sets(root, 90), [])
+
+
+class PatchSetRetentionCheckTests(unittest.TestCase):
+    """cli._patch_set_retention_check: the doctor "patch-set retention"
+    (label, ok, detail, fatal) tuple built from an already-computed stale
+    list -- same advisory shape as the "staging leftovers" crash-leftover
+    check (ok=False/"warn" when something is found, fatal always False,
+    since nothing here ever deletes a patch set)."""
+
+    def test_no_stale_sets_reports_clean(self):
+        label, ok, detail, fatal = cli._patch_set_retention_check([])
+        self.assertEqual(label, "patch-set retention")
+        self.assertTrue(ok)
+        self.assertFalse(fatal)
+        self.assertIn("none", detail)
+
+    def test_stale_sets_report_count_and_total_size(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ps1 = Path(temp) / "ps-1"
+            ps1.mkdir()
+            (ps1 / "preview.html").write_bytes(b"x" * 500)
+            ps2 = Path(temp) / "ps-2"
+            ps2.mkdir()
+            (ps2 / "notes.json").write_bytes(b"y" * 250)
+            label, ok, detail, fatal = cli._patch_set_retention_check([ps1, ps2])
+            self.assertEqual(label, "patch-set retention")
+            self.assertFalse(ok)  # advisory warn -- something to review
+            self.assertFalse(fatal)  # never fatal: nothing here deletes
+            self.assertIn("2 patch set", detail)
+            self.assertIn("750", detail)
+
+
+class WslWindowsHomesTests(unittest.TestCase):
+    """cli._wsl_windows_homes: the Windows-home enumeration shared by
+    open-preview and the doctor "preview copy" check. `users_root` is a
+    parameter so tests never touch the real /mnt/c/Users, and the helper
+    never shells out (a cmd.exe interop hang here would make every `doctor`
+    invocation slow, not just `open-preview`)."""
+
+    def test_missing_base_returns_no_candidates(self):
+        missing = Path(tempfile.gettempdir()) / "mem-dream-wsl-homes-test-missing-xyz"
+        self.assertEqual(cli._wsl_windows_homes(missing), [])
+
+    def test_base_dir_lists_real_users_excluding_system_pseudo_accounts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "alice").mkdir()
+            (root / "Public").mkdir()
+            (root / "Default").mkdir()
+            (root / "Default User").mkdir()
+            (root / "All Users").mkdir()
+            homes = cli._wsl_windows_homes(root)
+            names = {h.name for h in homes}
+            self.assertEqual(names, {"alice"})
+
+
+class PreviewCopyRetentionCheckTests(unittest.TestCase):
+    """cli._preview_copy_retention_check: the doctor "preview copy"
+    (label, ok, detail, fatal) tuple built from an already-resolved homes
+    list -- reports a leftover copy open-preview left behind, never removes
+    one."""
+
+    def test_no_candidate_homes_reports_nothing_to_check(self):
+        label, ok, detail, fatal = cli._preview_copy_retention_check([])
+        self.assertEqual(label, "preview copy")
+        self.assertTrue(ok)
+        self.assertFalse(fatal)
+
+    def test_homes_without_leftover_report_clean(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "alice"
+            home.mkdir()
+            label, ok, detail, fatal = cli._preview_copy_retention_check([home])
+            self.assertEqual(label, "preview copy")
+            self.assertTrue(ok)
+            self.assertFalse(fatal)
+            self.assertIn("none", detail)
+
+    def test_leftover_copy_is_reported_advisory_not_fatal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "alice"
+            home.mkdir()
+            (home / "memory-dream-preview.html").write_text("<html></html>", encoding="utf-8")
+            label, ok, detail, fatal = cli._preview_copy_retention_check([home])
+            self.assertEqual(label, "preview copy")
+            self.assertFalse(ok)
+            self.assertFalse(fatal)
+            self.assertIn("memory-dream-preview.html", detail)
+
+
+class DoctorPatchSetRetentionLineTests(unittest.TestCase):
+    """Full `memory-dream doctor` integration: the "patch-set retention"
+    line reports overdue patch sets by count and size and never deletes
+    anything; missing/empty pass root reports clean; the default 90-day
+    window applies with no override set."""
+
+    def test_default_retention_window_is_90_days(self):
+        self.assertEqual(config.PATCH_SET_RETENTION_DAYS, 90)
+
+    def test_no_pass_root_reports_clean(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            (claude_dir / "projects").mkdir(parents=True)
+            env = subprocess_env(claude_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "patch-set retention")
+            self.assertTrue(line.startswith("ok"), line)
+            self.assertIn("none", line)
+
+    def test_stale_patch_set_reported_by_count_and_size_and_not_deleted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            (claude_dir / "projects").mkdir(parents=True)
+            pass_root = claude_dir / "logs" / "memory-dream" / "passes"
+            old = pass_root / "2026-01-01-ps"
+            old.mkdir(parents=True)
+            (old / "preview.html").write_text("stale content", encoding="utf-8")
+            old_time = time.time() - 95 * 86400
+            os.utime(old, (old_time, old_time))
+            env = subprocess_env(claude_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "patch-set retention")
+            self.assertTrue(line.startswith("warn"), line)
+            self.assertIn("1 patch set", line)
+            self.assertIn("90 days", line)
+            # advisory only -- nothing deleted by running doctor
+            self.assertTrue(old.is_dir())
+            self.assertTrue((old / "preview.html").is_file())
+
+
+class DoctorPreviewCopyLineTests(unittest.TestCase):
+    """Full `memory-dream doctor` integration: the "preview copy" line is
+    always present and advisory-only (never affects doctor's exit code)."""
+
+    def test_preview_copy_line_present_and_advisory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            (claude_dir / "projects").mkdir(parents=True)
+            env = subprocess_env(claude_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "preview copy")
+            self.assertTrue(line.startswith("ok") or line.startswith("warn"), line)
+
+
+# =============================================================================
+# 12. compatibility record single-source guard
 # =============================================================================
 
 

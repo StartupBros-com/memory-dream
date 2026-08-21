@@ -153,6 +153,102 @@ def _config_overrides_check(overrides: dict[str, tuple[object, object, str]]) ->
     return ("config overrides", True, "; ".join(parts), False)
 
 
+def _stale_patch_sets(root: Path, retention_days: int) -> list[Path]:
+    """Patch-set directories directly under `root` whose mtime is older
+    than `retention_days`. Read-only: nothing here deletes or touches a
+    patch set, it only decides which ones the "patch-set retention"
+    advisory should count. `root` and `retention_days` are parameters (not
+    read from config here) so this is directly unit-testable against a temp
+    directory with `os.utime`-forged ages.
+    """
+    import time
+
+    if not root.is_dir():
+        return []
+    cutoff = time.time() - retention_days * 86400
+    return sorted(p for p in root.iterdir() if p.is_dir() and p.stat().st_mtime < cutoff)
+
+
+def _dir_size_bytes(path: Path) -> int:
+    """Total size of every regular file under `path`, recursively."""
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def _patch_set_retention_check(stale: list[Path]) -> tuple[str, bool, str, bool]:
+    """Build the doctor "patch-set retention" (label, ok, detail, fatal)
+    tuple.
+
+    `stale` is the already-computed list of patch-set directories older
+    than config.PATCH_SET_RETENTION_DAYS (see _stale_patch_sets) -- passed
+    in rather than walked here so the count/size reporting is directly
+    unit-testable without real pass-root state on disk. Same advisory
+    shape as the "staging leftovers" crash-leftover check below (ok=False,
+    reported as "warn", when something is found) but always fatal=False:
+    this is strictly a reporting check -- nothing here deletes a patch set.
+    Pruning stays entirely operator-owned.
+    """
+    if not stale:
+        return ("patch-set retention", True, f"none older than {config.PATCH_SET_RETENTION_DAYS} days", False)
+    total_bytes = sum(_dir_size_bytes(p) for p in stale)
+    return (
+        "patch-set retention",
+        False,
+        f"{len(stale)} patch set(s) older than {config.PATCH_SET_RETENTION_DAYS} days, "
+        f"{total_bytes} bytes total — review and remove manually (never deleted automatically)",
+        False,
+    )
+
+
+def _wsl_windows_homes(users_root: Path = Path("/mnt/c/Users")) -> list[Path]:
+    """Every real per-user home directory under `users_root` (WSL's mount
+    of the Windows user-profile root), excluding the well-known system
+    pseudo-accounts. Shared by `open-preview` (browsers cannot reliably
+    read \\wsl$ paths, so it copies preview.html somewhere a Windows
+    browser can open it) and by doctor's "preview copy" retention check
+    (which looks for a leftover copy a prior `open-preview` run left
+    behind).
+
+    `users_root` is a parameter (default the real /mnt/c/Users) so tests
+    can point it at a temp directory instead. Returns [] when `users_root`
+    is not a directory -- the non-WSL case: nothing to resolve.
+
+    Deliberately does not shell out to determine "the" current Windows
+    username: both callers already try every returned candidate (open-
+    preview stops at the first successful copy; the doctor check reports
+    any leftover across all of them), so a priority guess adds no
+    correctness value -- only a slow, occasionally-hanging subprocess
+    dependency doctor's preflight should not inherit.
+    """
+    if not users_root.is_dir():
+        return []
+    return [
+        p
+        for p in sorted(users_root.iterdir())
+        if p.is_dir() and p.name not in ("Public", "Default", "Default User", "All Users")
+    ]
+
+
+def _preview_copy_retention_check(homes: list[Path]) -> tuple[str, bool, str, bool]:
+    """Build the doctor "preview copy" (label, ok, detail, fatal) tuple.
+
+    `homes` is the already-resolved list of WSL Windows-home candidates
+    (see _wsl_windows_homes) -- passed in rather than resolved here so the
+    reporting is directly unit-testable. An empty list covers both the
+    non-WSL case (no /mnt/c/Users: nothing to check) and a WSL host with no
+    resolvable candidate home; either way this reports cleanly, never as
+    drift. Always advisory (fatal=False): a leftover copy holds note bodies
+    and is flagged for the operator to delete after review, never removed
+    here.
+    """
+    if not homes:
+        return ("preview copy", True, "no Windows-home candidates to check (not on WSL, or none resolved)", False)
+    leftovers = [h / "memory-dream-preview.html" for h in homes if (h / "memory-dream-preview.html").is_file()]
+    if not leftovers:
+        return ("preview copy", True, "none", False)
+    paths = ", ".join(str(p) for p in leftovers)
+    return ("preview copy", False, f"leftover copy holding note bodies — delete after review: {paths}", False)
+
+
 def _run_doctor(args) -> int:
     import importlib.util
     import os
@@ -217,6 +313,10 @@ def _run_doctor(args) -> int:
         ("staging leftovers", not orphans, f"{len(orphans)} orphaned *.dream-tmp file(s) — crash leftovers, review and remove" if orphans else "none", False)
     )
 
+    checks.append(_patch_set_retention_check(_stale_patch_sets(config.pass_root(), config.PATCH_SET_RETENTION_DAYS)))
+
+    checks.append(_preview_copy_retention_check(_wsl_windows_homes()))
+
     for tool in ("git", "gh"):
         checks.append((f"{tool} (optional)", True, shutil.which(tool) or "not found — repo-grounding checks degrade to note-only", False))
 
@@ -267,7 +367,8 @@ def _run_open_preview(args) -> int:
         print(f"opened {preview}")
         return 0
 
-    if Path("/mnt/c/Users").is_dir():  # WSL: browsers cannot read \\wsl$ paths reliably
+    homes = _wsl_windows_homes()  # WSL: browsers cannot read \\wsl$ paths reliably
+    if homes:
         username = None
         try:
             out = subprocess.run(
@@ -276,9 +377,10 @@ def _run_open_preview(args) -> int:
             username = out.stdout.strip() or None
         except Exception:
             username = None
-        candidates = [Path(f"/mnt/c/Users/{username}")] if username else []
-        candidates += [p for p in Path("/mnt/c/Users").iterdir() if p.is_dir() and p.name not in ("Public", "Default", "Default User", "All Users")]
-        for home in candidates:
+        if username:  # try the operator's own profile first, when guessable
+            guessed = Path("/mnt/c/Users") / username
+            homes = [guessed] + [h for h in homes if h != guessed]
+        for home in homes:
             target = home / "memory-dream-preview.html"
             try:
                 shutil.copy(preview, target)
