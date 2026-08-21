@@ -74,6 +74,11 @@ def transcripts_dir_for(cwd: Path) -> Path:
     return config.claude_config_dir() / "projects" / cwd_slug(cwd)
 
 
+def _transcripts_by_mtime(transcripts_dir: Path) -> list[Path]:
+    """Return JSONL transcripts ordered from oldest to newest by mtime."""
+    return sorted(transcripts_dir.glob("*.jsonl"), key=lambda path: path.stat().st_mtime)
+
+
 def schema_probe(transcripts_dir: Path) -> str:
     """Sample the newest transcript and report whether its shape is recognized.
 
@@ -84,7 +89,7 @@ def schema_probe(transcripts_dir: Path) -> str:
     """
     if not transcripts_dir.is_dir():
         return "UNRECOGNIZED: transcripts directory does not exist"
-    transcripts = sorted(transcripts_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    transcripts = _transcripts_by_mtime(transcripts_dir)
     if not transcripts:
         return "UNRECOGNIZED: no *.jsonl files found"
     newest = transcripts[-1]
@@ -205,7 +210,7 @@ def compaction_canary(transcripts_dir: Path, sample_files: int = _CANARY_SAMPLE_
     """
     if not transcripts_dir.is_dir():
         return "unverified", "unverified — no compaction sample (transcripts directory does not exist)"
-    transcripts = sorted(transcripts_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)[-sample_files:]
+    transcripts = _transcripts_by_mtime(transcripts_dir)[-sample_files:]
     if not transcripts:
         return "unverified", "unverified — no compaction sample (no *.jsonl files found)"
 
@@ -379,7 +384,7 @@ def run_transcript_locate(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    transcripts = sorted(transcripts_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    transcripts = _transcripts_by_mtime(transcripts_dir)
     if not transcripts:
         print(
             f"memory-dream transcript-locate: transcript directory holds no *.jsonl files: {transcripts_dir}",
