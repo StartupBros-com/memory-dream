@@ -534,6 +534,17 @@ python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" trace \
 #                   "patch_set_id": "$PATCH_ID"}
 ```
 
+Apply keeps its own record of what got left out. Once it finishes, every
+proposal that was shown in this preview but not included in `approved` gets
+appended to `rejections.json`, one entry each. That file lives directly
+under the pass root, alongside (not inside) the dated pass-set directories,
+so deleting old pass-set directories per the retention advisory can never
+erase it. Each entry looks like
+`{recorded_at, patch_set_id, proposal_id, project, paths}`, where `paths` is
+the declined proposal's own source and result note paths. Nothing ever
+prunes this file — it only grows — and a later triage pass reads it to
+avoid re-flagging a proposal the operator already turned down.
+
 Build `selection.json` with the approved IDs (only proposals shown in this
 preview), the emitted trace, and `patch_set_id` set to the manifest `id`.
 Apply refuses unless the approval turn is a real post-preview human message
