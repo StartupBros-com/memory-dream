@@ -30,12 +30,30 @@ TRIAGE_MAX_CLUSTERS = 12  # per-pass cluster cap (overflow -> deferred)
 TRIAGE_MAX_NOTES_PER_CLUSTER = 8
 TRIAGE_DESC_MIN_WORDS = 5  # descriptions shorter than this are flagged vague
 SUPPRESS_APPLIED_DAYS = 14  # don't re-flag notes a recent pass just touched
+SUPPRESS_REJECTED_DAYS = 14  # don't re-flag paths a recently REJECTED proposal covered
+
+# --- Compatibility record ---------------------------------------------------
+# Single source of truth for the "measured against Claude Code vX.Y.Z" claim
+# repeated across docs and doctor output. This is the only literal version
+# string in the repo; every other site (code and prose) cites
+# COMPATIBILITY_RECORD by name instead of restating it. `doctor`'s "index
+# cap" check (cli.py) shells out to `claude --version` and compares the
+# installed version against claude_code_version below, reporting
+# ok/drift/unverifiable — advisory, never fatal.
+COMPATIBILITY_RECORD: dict[str, object] = {
+    "claude_code_version": "2.1.211",
+    "index_load_max_lines": 200,
+    "index_load_max_bytes": 25 * 1024,
+}
 
 # --- Index budget (the loader-visible MEMORY.md surface) -------------------
-# Measured against Claude Code v2.1.211's per-project load accounting; the cap
-# is not a documented API and can drift with the CLI. `doctor` restates this.
-INDEX_LOAD_MAX_LINES = 200
-INDEX_LOAD_MAX_BYTES = 25 * 1024
+# Cap values measured against COMPATIBILITY_RECORD's Claude Code version; the
+# cap is not a documented API and can drift with the CLI. `doctor` compares
+# the installed CLI version against the record and reports drift. Derived
+# from the record so the measured values cannot drift from their provenance;
+# both stay independently overridable globals.
+INDEX_LOAD_MAX_LINES = COMPATIBILITY_RECORD["index_load_max_lines"]
+INDEX_LOAD_MAX_BYTES = COMPATIBILITY_RECORD["index_load_max_bytes"]
 INDEX_BUDGET_FRACTION = 0.7  # repository-hygiene warning threshold
 # Repo-hygiene audit ceilings (distinct from the loader cap above).
 AUDIT_MAX_INDEX_BYTES = 32768
@@ -80,6 +98,12 @@ _OVERRIDABLE = {
     for name, value in list(globals().items())
     if name.isupper() and not name.startswith("_") and not isinstance(value, bool) and isinstance(value, (int, float, str, list))
 }
+
+# Snapshot of the shipped default for every _OVERRIDABLE name, captured here
+# -- before load_file_config()/_apply_env_overrides() mutate these same
+# globals in place -- so `doctor` can later diff the live value against what
+# actually shipped, no matter what the running process has already applied.
+_DEFAULTS: dict[str, object] = {name: globals()[name] for name in _OVERRIDABLE}
 
 
 def claude_config_dir() -> Path:
@@ -200,6 +224,34 @@ def load_file_config() -> None:
             f"(valid: mirror_root, mirror_push_hint, {', '.join(sorted(k.lower() for k in _OVERRIDABLE))})"
         )
     _apply_env_overrides()
+
+
+def non_default_values() -> dict[str, tuple[object, object, str]]:
+    """Every ``_OVERRIDABLE`` name whose live value no longer matches its
+    shipped default (``_DEFAULTS``), mapped to ``(current, default, source)``.
+
+    Source attribution mirrors the resolution order ``load_file_config()``
+    already enforces (env beats file): the env var is checked first, then
+    the JSON config file key. Neither set means the value was mutated some
+    other way (e.g. a test patching the module global directly); source is
+    reported as "unknown" in that case.
+    """
+    file_cfg = _file_config()
+    file_keys = {key.lower() for key in file_cfg}
+    result: dict[str, tuple[object, object, str]] = {}
+    for name, default in _DEFAULTS.items():
+        current = globals()[name]
+        if current == default:
+            continue
+        env_name = _ENV_PREFIX + name
+        if os.environ.get(env_name) is not None:
+            source = f"env:{env_name}"
+        elif name.lower() in file_keys:
+            source = f"file:{name.lower()}"
+        else:
+            source = "unknown"
+        result[name] = (current, default, source)
+    return result
 
 
 def add_root_args(parser) -> None:

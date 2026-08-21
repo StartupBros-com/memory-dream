@@ -7,6 +7,7 @@ developer's real ~/.claude/memory-dream.json) and never inherits
 MEMORY_DREAM_*/CLAUDE_MEMORY_*/CLAUDE_JOB_DIR from the outer environment.
 """
 
+import datetime as dt
 import hashlib
 import json
 import os
@@ -146,11 +147,14 @@ class Harness:
         )
 
 
-class MemoryDreamApplyTests(unittest.TestCase):
-    def _close_old_proposal(self, harness, key="proj"):
+class ApplyFixtureMixin:
+    """Shared fixture builders for apply-focused test classes (a mixin, not a
+    TestCase, so subclassing never duplicates inherited test methods)."""
+
+    def _close_old_proposal(self, harness, key="proj", pid="p1"):
         harness.add_proposal(
             {
-                "id": "p1",
+                "id": pid,
                 "project": key,
                 "action": "period-close",
                 "sources": [{"path": "old.md", "digest": harness.digest(key, "old.md")}],
@@ -168,6 +172,9 @@ class MemoryDreamApplyTests(unittest.TestCase):
         (live / "new.md").write_text(note("new", body="Current truth."), encoding="utf-8", newline="\n")
         harness.mirror_sync(key)
         return live
+
+
+class MemoryDreamApplyTests(ApplyFixtureMixin, unittest.TestCase):
 
     def test_archive_proposal_moves_index_entries(self):
         # Archive is index-only: entries move from MEMORY.md to MEMORY-archive.md
@@ -1008,7 +1015,7 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
         # applies.
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
-            live = self._standard_project(harness)
+            self._standard_project(harness)
             secret = harness.root / "outside_secret.md"
             secret.write_text("SECRET-CONTENT\n", encoding="utf-8", newline="\n")
             harness.add_proposal({
@@ -1169,6 +1176,301 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             self.assertEqual(self._statuses(harness)["a1"]["reason"], "sensitive")
             self.assertFalse((live / "MEMORY-archive.md").exists())
             self.assertIn(entry, (live / "MEMORY.md").read_text(encoding="utf-8"))  # index untouched
+
+
+class ApplyCompactionCanaryPreflightTests(ApplyFixtureMixin, unittest.TestCase):
+    """Apply's preflight runs the same compaction canary doctor runs, against
+    the same CLAUDE_CONFIG_DIR/projects/<cwd-slug> transcripts directory
+    (harness.run() always shells out with cwd=REPO_ROOT). Warn-only: it never
+    changes apply's exit code, and it prints before the consent-trace check
+    that follows it."""
+
+    def _write_drift_transcripts_dir(self, harness):
+        transcripts_dir = harness.claude_config_dir / "projects" / transcript.cwd_slug(REPO_ROOT)
+        transcripts_dir.mkdir(parents=True)
+        (transcripts_dir / "session.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "isSummaryRenamedUpstream": True,
+                    "message": {
+                        "role": "user",
+                        "content": (
+                            "This session is being continued from a previous conversation "
+                            "that ran out of context."
+                        ),
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    def test_drift_warning_printed_but_does_not_change_success_exit_code(self):
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)
+            harness.write()
+            self._write_drift_transcripts_dir(harness)
+            result = harness.run(harness.selection(["p1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("consent-gate canary reports transcript schema drift", result.stderr)
+            self.assertIn("memory-dream doctor", result.stderr)
+
+    def test_drift_warning_precedes_consent_trace_refusal_and_exit_code_unchanged(self):
+        # Same fixture as test_refuses_missing_and_mismatched_trace (no
+        # operator_trace at all) but with the drift fixture layered on top:
+        # the refusal reason and exit code must be identical to the
+        # no-canary case, and the warning must appear before it in stderr.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)
+            harness.write()
+            self._write_drift_transcripts_dir(harness)
+            no_trace = harness.selection(["p1"], trace={}, path_name="no_trace.json")
+            result = harness.run(no_trace)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("operator trace invalid", result.stderr)
+            warning_at = result.stderr.index("consent-gate canary reports transcript schema drift")
+            refusal_at = result.stderr.index("operator trace invalid")
+            self.assertLess(warning_at, refusal_at, result.stderr)
+
+    def test_no_drift_fixture_prints_no_canary_warning(self):
+        # Baseline: with no CLAUDE_CONFIG_DIR/projects/<slug> directory at
+        # all (the default for every other apply test in this file), the
+        # canary is "unverified" and prints nothing.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)
+            harness.write()
+            result = harness.run(harness.selection(["p1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("consent-gate canary", result.stderr)
+
+
+class ApplyRejectionRecordingTests(ApplyFixtureMixin, unittest.TestCase):
+    """rejections.json durably records which PRESENTED proposals the operator
+    did not approve: a sibling of the dated patch-set directories
+    under config.pass_root(), never inside one, so pruning old pass dirs
+    (the retention advisory's suggested cleanup) can never erase it."""
+
+    def _rejections_path(self, harness):
+        return harness.claude_config_dir / "logs" / "memory-dream" / "passes" / "rejections.json"
+
+    def test_rejected_proposal_recorded_with_union_of_source_and_result_paths(self):
+        # 3 presented (p1, p2 approved; p3 not) -> exactly 1 rejection entry,
+        # for p3, whose paths union its OWN sources[].path and results[].path
+        # (p3's fake paths are never touched by apply -- rejected proposals
+        # are excluded before apply_project ever runs, only used here).
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)  # p1
+            harness.add_proposal(
+                {
+                    "id": "p2",
+                    "project": "proj",
+                    "action": "compress",
+                    "sources": [{"path": "new.md", "digest": harness.digest("proj", "new.md")}],
+                    "results": [{"path": "new.md", "content": note("new", body="compressed")}],
+                    "deletes": [],
+                    "justification": "compress",
+                    "sensitive": False,
+                }
+            )
+            harness.add_proposal(
+                {
+                    "id": "p3",
+                    "project": "proj",
+                    "action": "merge",
+                    "sources": [{"path": "a.md", "digest": "deadbeef"}],
+                    "results": [{"path": "b.md", "content": "merged content"}],
+                    "deletes": ["a.md"],
+                    "justification": "merge",
+                    "sensitive": False,
+                }
+            )
+            harness.write()
+            result = harness.run(harness.selection(["p1", "p2"]), "--now-ts", "1700000000")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(self._rejections_path(harness).read_text(encoding="utf-8"))
+            self.assertEqual(len(payload["entries"]), 1)
+            entry = payload["entries"][0]
+            self.assertEqual(entry["proposal_id"], "p3")
+            self.assertEqual(entry["project"], "proj")
+            self.assertEqual(sorted(entry["paths"]), ["a.md", "b.md"])
+            self.assertEqual(entry["patch_set_id"], harness.manifest_id)
+            expected_recorded_at = dt.datetime.fromtimestamp(1700000000, tz=dt.timezone.utc).isoformat()
+            self.assertEqual(entry["recorded_at"], expected_recorded_at)
+
+    def test_all_approved_writes_no_rejections_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)
+            harness.write()
+            result = harness.run(harness.selection(["p1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(self._rejections_path(harness).exists())
+
+    def test_two_applies_append_entries_in_order(self):
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)  # p1, approved
+            harness.add_proposal(
+                {
+                    "id": "reject-1",
+                    "project": "proj",
+                    "action": "merge",
+                    "sources": [{"path": "x.md", "digest": "aaa"}],
+                    "results": [{"path": "y.md", "content": "..."}],
+                    "deletes": ["x.md"],
+                    "justification": "merge",
+                    "sensitive": False,
+                }
+            )
+            harness.write()
+            result1 = harness.run(harness.selection(["p1"]), "--now-ts", "1700000000", mirror=False)
+            self.assertEqual(result1.returncode, 0, result1.stderr)
+
+            # A second, later pass: a fresh dated patch-set directory, same
+            # CLAUDE_CONFIG_DIR (=> same config.pass_root()).
+            harness.patch_set = harness.logs / "20260718-000000"
+            harness.patch_set.mkdir(parents=True)
+            harness._proposals = []
+            harness.add_proposal(
+                {
+                    "id": "p2",
+                    "project": "proj",
+                    "action": "compress",
+                    "sources": [{"path": "new.md", "digest": harness.digest("proj", "new.md")}],
+                    "results": [{"path": "new.md", "content": note("new", body="v2")}],
+                    "deletes": [],
+                    "justification": "compress",
+                    "sensitive": False,
+                }
+            )
+            harness.add_proposal(
+                {
+                    "id": "reject-2",
+                    "project": "proj",
+                    "action": "merge",
+                    "sources": [{"path": "m.md", "digest": "bbb"}],
+                    "results": [{"path": "n.md", "content": "..."}],
+                    "deletes": ["m.md"],
+                    "justification": "merge",
+                    "sensitive": False,
+                }
+            )
+            harness.write()
+            result2 = harness.run(harness.selection(["p2"]), "--now-ts", "1700003600", mirror=False)
+            self.assertEqual(result2.returncode, 0, result2.stderr)
+
+            payload = json.loads(self._rejections_path(harness).read_text(encoding="utf-8"))
+            self.assertEqual([entry["proposal_id"] for entry in payload["entries"]], ["reject-1", "reject-2"])
+
+    def test_deferred_and_manual_review_items_never_recorded_as_rejections(self):
+        # report.json's deferred/manual_review lists (plan-level: per-pass cap
+        # overflow, sensitive filenames) never became manifest proposals at
+        # all -- they were never presented for approval, so they must never
+        # surface in rejections.json even when it's alongside a real rejection.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)  # p1, approved
+            harness.add_proposal(
+                {
+                    "id": "p2",
+                    "project": "proj",
+                    "action": "merge",
+                    "sources": [{"path": "p2-source.md", "digest": "cafe"}],
+                    "results": [{"path": "p2-result.md", "content": "..."}],
+                    "deletes": ["p2-source.md"],
+                    "justification": "merge",
+                    "sensitive": False,
+                }
+            )
+            harness.write()
+            (harness.patch_set / "report.json").write_text(
+                json.dumps(
+                    {
+                        "dropped": [],
+                        "deferred": [{"project": "proj", "path": "deferred-note.md", "reason": "per-pass-cap"}],
+                        "manual_review": [{"project": "proj", "path": "sensitive-note.md", "reason": "sensitive"}],
+                    }
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            result = harness.run(harness.selection(["p1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(self._rejections_path(harness).read_text(encoding="utf-8"))
+            self.assertEqual([entry["proposal_id"] for entry in payload["entries"]], ["p2"])
+            recorded_paths = {path for entry in payload["entries"] for path in entry["paths"]}
+            self.assertNotIn("deferred-note.md", recorded_paths)
+            self.assertNotIn("sensitive-note.md", recorded_paths)
+
+    def test_corrupt_rejections_file_renamed_aside_apply_still_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)  # p1, approved
+            harness.add_proposal(
+                {
+                    "id": "p2",
+                    "project": "proj",
+                    "action": "merge",
+                    "sources": [{"path": "p2-source.md", "digest": "cafe"}],
+                    "results": [{"path": "p2-result.md", "content": "..."}],
+                    "deletes": ["p2-source.md"],
+                    "justification": "merge",
+                    "sensitive": False,
+                }
+            )
+            harness.write()
+            passes_dir = harness.claude_config_dir / "logs" / "memory-dream" / "passes"
+            passes_dir.mkdir(parents=True)
+            rejections_path = passes_dir / "rejections.json"
+            rejections_path.write_text("{ not valid json at all", encoding="utf-8", newline="\n")
+
+            result = harness.run(harness.selection(["p1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            corrupt_files = list(passes_dir.glob("rejections.json.corrupt-*"))
+            self.assertEqual(len(corrupt_files), 1, corrupt_files)
+            self.assertEqual(corrupt_files[0].read_text(encoding="utf-8"), "{ not valid json at all")
+            payload = json.loads(rejections_path.read_text(encoding="utf-8"))
+            self.assertEqual([entry["proposal_id"] for entry in payload["entries"]], ["p2"])
+
+    def test_rejections_file_lands_under_pass_root_not_inside_patch_set(self):
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)  # p1, approved
+            harness.add_proposal(
+                {
+                    "id": "p2",
+                    "project": "proj",
+                    "action": "merge",
+                    "sources": [{"path": "p2-source.md", "digest": "cafe"}],
+                    "results": [{"path": "p2-result.md", "content": "..."}],
+                    "deletes": ["p2-source.md"],
+                    "justification": "merge",
+                    "sensitive": False,
+                }
+            )
+            harness.write()
+            result = harness.run(harness.selection(["p1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            pass_root = harness.claude_config_dir / "logs" / "memory-dream" / "passes"
+            self.assertTrue((pass_root / "rejections.json").is_file())
+            self.assertFalse((harness.patch_set / "rejections.json").exists())
+            self.assertNotEqual(harness.patch_set, pass_root)
 
 
 if __name__ == "__main__":

@@ -19,11 +19,12 @@ truths. Two categories deserve explicit distrust:
 
 - **The index caps (`INDEX_LOAD_MAX_LINES`, `INDEX_LOAD_MAX_BYTES`) are
   version-measured, not corpus-measured.** They describe Claude Code's own
-  per-project memory-load accounting as observed against Claude Code
-  v2.1.211. That accounting is not a documented, versioned API of Claude
-  Code — it can drift on a CLI upgrade without notice. Re-run
-  `memory-dream doctor` after upgrading Claude Code and re-measure if the
-  caveat it prints looks stale.
+  per-project memory-load accounting as observed against the Claude Code
+  version recorded in `config.COMPATIBILITY_RECORD`. That accounting is not
+  a documented, versioned API of Claude Code — it can drift on a CLI
+  upgrade without notice. `memory-dream doctor` shells out to `claude
+  --version` and compares it against the record itself now, reporting drift
+  as an advisory; re-measure if it reports a mismatch.
 - **The Jaccard thresholds (`MERGE_JACCARD`, `SIBLING_DESC_JACCARD`) are
   English-corpus-calibrated.** The tokenizer underneath them is
   Unicode-aware (`\w+` with `re.UNICODE`), so it will not crash or silently
@@ -45,12 +46,13 @@ truths. Two categories deserve explicit distrust:
 | `TRIAGE_MAX_NOTES_PER_CLUSTER` | 8 | Per-cluster note cap. | Corpus + drafting-prompt-size limit (note bodies go inline in the drafter prompt). | Topics that legitimately span more notes get split arbitrarily across cluster boundaries. | A single drafter prompt balloons with many bodies, raising both cost and the odds a fidelity verifier misses something in a larger diff. | `memory-dream plan --max-notes`, env, or config. |
 | `TRIAGE_DESC_MIN_WORDS` | 5 | Descriptions shorter than this are flagged vague. | Same corpus. | Genuinely non-descriptive one/two-word descriptions stop getting flagged. | Legitimately terse, specific descriptions get flagged as vague, adding noise. | Env/config only. |
 | `SUPPRESS_APPLIED_DAYS` | 14 | Suppresses re-flagging notes a recent pass just touched. | Corpus + operational (avoids re-litigating the same notes pass after pass). | A note just consolidated shows up flagged again next run, wasting drafting effort re-verifying it. | A note a previous pass mishandled, or that kept decaying, doesn't resurface for a long stretch. | `memory-dream triage --suppress-applied-days`, env, or config. |
+| `SUPPRESS_REJECTED_DAYS` | 14 | Suppresses re-flagging notes whose proposal the operator recently rejected (read from `rejections.json`). | Mirrors `SUPPRESS_APPLIED_DAYS`'s operational rationale: a declined proposal should not be re-drafted the very next pass. | A proposal the operator just declined gets re-flagged and re-drafted immediately, re-litigating the same decision. | A note rejected "for now" stays invisible long after the operator would welcome it back into triage. | `memory-dream triage --suppress-rejected-days`, env, or config. |
 
 ## Index budget
 
 | Name | Default | Controls | Provenance | Too low | Too high | Override |
 |---|---|---|---|---|---|---|
-| `INDEX_LOAD_MAX_LINES` | 200 | Loader-visible index line cap. | **Version-measured** against Claude Code v2.1.211's load accounting — not a documented API, re-verify after CLI upgrades. | Over-conservative refusals of legitimate index growth if the real cap is actually higher. | Notes silently fall outside what a session actually loads while this tool reports the index as healthy, if the real cap shrank. | Env/config only; `memory-dream doctor` restates the current value and caveat. |
+| `INDEX_LOAD_MAX_LINES` | 200 | Loader-visible index line cap. | **Version-measured** against the Claude Code version in `config.COMPATIBILITY_RECORD`'s load accounting — not a documented API, re-verify after CLI upgrades. | Over-conservative refusals of legitimate index growth if the real cap is actually higher. | Notes silently fall outside what a session actually loads while this tool reports the index as healthy, if the real cap shrank. | Env/config only; `memory-dream doctor` compares the installed CLI version against the record and reports drift. |
 | `INDEX_LOAD_MAX_BYTES` | 25600 (25 KiB) | Loader-visible index byte cap. | Same as above. | Same as above. | Same as above. | Env/config only. |
 | `INDEX_BUDGET_FRACTION` | 0.7 | Fraction of the load cap that trips an early repo-hygiene warning. | Corpus-calibrated. | Warnings fire with plenty of headroom left; becomes noise. | Warning doesn't fire until the index is nearly or already at the hard cap, leaving no runway to fix it. | Env/config only. |
 | `AUDIT_MAX_INDEX_BYTES` | 32768 | Repo-hygiene audit ceiling (distinct from the loader cap — roomier, informational). | Corpus-calibrated. | Audit nags well before the loader cap actually matters. | Audit stays quiet on an index already well past the load cap. | `memory-dream audit --max-index-bytes`, env, or config. |
@@ -80,7 +82,7 @@ truths. Two categories deserve explicit distrust:
 | Name | Default | Controls | Provenance | Too low | Too high | Override |
 |---|---|---|---|---|---|---|
 | `ACTIVE_WINDOW_SECONDS` | 900 (15 min) | Sibling-session activity warning window at apply preflight. | Corpus/operational heuristic for session overlap. | A genuinely-overlapping session that touched files just outside the window gets no warning, so two sessions can still race. | Apply warns about "another active session" long after it actually finished, becoming a false alarm the operator learns to ignore. | `memory-dream apply --active-window-seconds`, env, or config. |
-| `PATCH_SET_RETENTION_DAYS` | 90 | Advisory retention horizon; pruning old patch sets is operator-owned (no automatic prune ships in this package). | Corpus/operational, matches the 90-day cadence used elsewhere. | Only matters if you build your own pruning job that reads it; unused, it does nothing on its own. Understates retention if you assume automatic pruning that isn't there. | Overstates disk-usage guidance if you build a pruning job around a value looser than your actual needs. | Env/config only. |
+| `PATCH_SET_RETENTION_DAYS` | 90 | Advisory retention horizon: `memory-dream doctor` flags patch-set directories under `config.pass_root()` older than this (count and total size) and separately flags a leftover WSL preview-copy; pruning itself is still operator-owned (no automatic delete ships in this package). | Corpus/operational, matches the 90-day cadence used elsewhere. | The doctor advisory flags patch sets that aren't genuinely overdue yet, nagging before the operator would actually consider them stale. | Genuinely stale patch sets pile up on disk longer before the doctor advisory ever surfaces them. | Env/config only. |
 
 ## Sensitive-content and mirror text
 

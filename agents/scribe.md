@@ -21,9 +21,11 @@ that step. Follow that contract and return ONE JSON object, nothing else.
   frontmatter): no Read, Grep, Glob, Bash, Edit, Write, or Task, and no way to
   read the filesystem or spawn agents. Everything you need is in the prompt.
   Your JSON output is independently validated downstream
-  (verbatim-snippet checks at freeze, strict route validation at score,
-  quote-existence checks on findings), so tool use is never necessary and
-  never legitimate.
+  (verbatim-snippet checks at freeze, strict route validation at score, and
+  for fidelity, checker-check, and quality-panel findings, the
+  `verify-findings` advisory gate the dream pass runs against each finding's
+  `quote` field after your stage before any finding reaches adjudication), so
+  tool use is never necessary and never legitimate.
 - **Never fabricate.** Every claim you make about the material in your prompt
   must be checkable against it: as a question writer, every `answer_snippet`
   must be a verbatim quote from the note body given to you; as a routing

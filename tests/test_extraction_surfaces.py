@@ -3,7 +3,11 @@
 
 Covers: snapshot backup + restore round trip, --consent token mode,
 transcript schema-probe loud failure, config resolution order,
-compat.FileLock contention, cli-as-file invocation, and `doctor` exit codes.
+compat.FileLock contention, and cli-as-file invocation.
+
+Doctor-focused coverage (exit codes, index-cap compatibility record,
+compaction canary, config overrides, patch-set/preview-copy retention,
+aggregate drift line / --strict) lives in test_doctor.py.
 
 House rules (see docs/EXTRACTION-DESIGN.md "Tests" and the port task brief):
   - stdlib unittest only, no model calls, no network.
@@ -24,7 +28,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -429,6 +433,82 @@ class ConfigResolutionTests(unittest.TestCase):
             self.assertIsNone(config.default_mirror_root())
 
 
+class ConfigNonDefaultValuesTests(unittest.TestCase):
+    """config.non_default_values(): every _OVERRIDABLE name whose live value
+    differs from its shipped default (config._DEFAULTS), with source
+    attribution following the same env-beats-file precedence
+    _apply_env_overrides()/load_file_config() already enforce."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        stripped = _strip_leaky_keys(os.environ)
+        os.environ.clear()
+        os.environ.update(stripped)
+        self._merge_jaccard_backup = config.MERGE_JACCARD
+        self._file_config_loaded_backup = config._FILE_CONFIG_LOADED
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        config.MERGE_JACCARD = self._merge_jaccard_backup
+        config._FILE_CONFIG_LOADED = self._file_config_loaded_backup
+
+    def test_no_overrides_reports_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()
+            os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+            self.assertEqual(config.non_default_values(), {})
+
+    def test_env_override_reports_env_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()
+            os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+            os.environ["MEMORY_DREAM_MERGE_JACCARD"] = "0.9"
+            config._FILE_CONFIG_LOADED = False
+            config.load_file_config()
+            overrides = config.non_default_values()
+            self.assertIn("MERGE_JACCARD", overrides)
+            current, default, source = overrides["MERGE_JACCARD"]
+            self.assertEqual(current, 0.9)
+            self.assertEqual(default, config._DEFAULTS["MERGE_JACCARD"])
+            self.assertIn("MEMORY_DREAM_MERGE_JACCARD", source)
+
+    def test_file_override_reports_file_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()
+            (claude_dir / "memory-dream.json").write_text(
+                json.dumps({"merge_jaccard": 0.75}), encoding="utf-8", newline="\n"
+            )
+            os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+            config._FILE_CONFIG_LOADED = False
+            config.load_file_config()
+            overrides = config.non_default_values()
+            self.assertIn("MERGE_JACCARD", overrides)
+            current, default, source = overrides["MERGE_JACCARD"]
+            self.assertEqual(current, 0.75)
+            self.assertIn("merge_jaccard", source)
+            self.assertNotIn("MEMORY_DREAM_MERGE_JACCARD", source)
+
+    def test_env_wins_over_file_for_source_naming(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()
+            (claude_dir / "memory-dream.json").write_text(
+                json.dumps({"merge_jaccard": 0.75}), encoding="utf-8", newline="\n"
+            )
+            os.environ["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+            os.environ["MEMORY_DREAM_MERGE_JACCARD"] = "0.9"
+            config._FILE_CONFIG_LOADED = False
+            config.load_file_config()
+            overrides = config.non_default_values()
+            current, default, source = overrides["MERGE_JACCARD"]
+            self.assertEqual(current, 0.9)
+            self.assertIn("MEMORY_DREAM_MERGE_JACCARD", source)
+
+
 # =============================================================================
 # 5. compat.FileLock
 # =============================================================================
@@ -493,58 +573,6 @@ class CliFileInvocationTests(unittest.TestCase):
                 check=False,
             )
             self.assertIn("doctor:", result.stdout)
-
-
-# =============================================================================
-# 7. doctor
-# =============================================================================
-
-
-def _doctor_line(stdout: str, needle: str) -> str:
-    for line in stdout.splitlines():
-        if needle in line:
-            return line
-    raise AssertionError(f"no doctor line contains {needle!r} in:\n{stdout}")
-
-
-class TranscriptSlugTests(unittest.TestCase):
-    def test_cwd_slug_never_escapes_projects_dir(self):
-        # Windows drive colons and backslashes must be replaced too: the slug
-        # is always one relative component, so ``projects / slug`` can never
-        # resolve outside the config directory (the v0.1.0 Windows bug).
-        self.assertEqual(
-            transcript.cwd_slug(PureWindowsPath("C:\\Users\\x\\proj.app")),
-            "C--Users-x-proj-app",
-        )
-        self.assertEqual(transcript.cwd_slug(Path("/home/x/proj.app")), "-home-x-proj-app")
-
-
-class DoctorTests(unittest.TestCase):
-    def test_healthy_layout_exits_zero(self):
-        with tempfile.TemporaryDirectory() as temp:
-            claude_dir = Path(temp) / "claude-config"
-            projects = claude_dir / "projects"
-            (projects / "some-project" / "memory").mkdir(parents=True)
-            # transcripts_dir_for slugs the cwd; doctor's subcommand runs with
-            # cwd=REPO_ROOT per the house rule for subprocess CLI calls.
-            transcripts_dir = projects / transcript.cwd_slug(REPO_ROOT)
-            transcripts_dir.mkdir(parents=True)
-            (transcripts_dir / "session.jsonl").write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}}) + "\n", encoding="utf-8", newline="\n")
-            env = subprocess_env(claude_dir)
-            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertTrue(_doctor_line(result.stdout, "live root").startswith("ok"))
-            self.assertTrue(_doctor_line(result.stdout, "consent trace").startswith("ok"))
-            self.assertIn("recognized", _doctor_line(result.stdout, "consent trace"))
-
-    def test_missing_live_root_exits_one(self):
-        with tempfile.TemporaryDirectory() as temp:
-            claude_dir = Path(temp) / "claude-config"
-            claude_dir.mkdir()  # deliberately no "projects" subdirectory
-            env = subprocess_env(claude_dir)
-            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
-            self.assertEqual(result.returncode, 1)
-            self.assertTrue(_doctor_line(result.stdout, "live root").startswith("FAIL"))
 
 
 if __name__ == "__main__":

@@ -398,6 +398,50 @@ class MemoryTriageTests(unittest.TestCase):
                 self.assertIn(field, record)
 
 
+class ComputeTriageParityTests(unittest.TestCase):
+    """`audit.compute_triage` is the extracted, in-process-callable core of
+    `run_triage` (doctor's readiness check calls it directly, without
+    shelling out). This pins that the extraction changed nothing observable:
+    a direct call with the same roots/now/suppression-days must return
+    exactly the dict the CLI's --format json path prints."""
+
+    run_triage = MemoryTriageTests.run_triage
+
+    def test_direct_call_matches_cli_json_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Fixture(Path(temp))
+            live, _ = fixture.project(mirror=False)
+            (live / "MEMORY.md").write_text("- [L](log.md)\n", encoding="utf-8", newline="\n")
+            (live / "log.md").write_text(note("log", body="z" * 6500), encoding="utf-8", newline="\n")
+            cli_result = self.run_triage(fixture, "--now", "2026-07-17")
+            self.assertEqual(cli_result.returncode, 0)
+            cli_payload = json.loads(cli_result.stdout)
+
+            # compute_triage reads config.pass_root() (via update_deferral_streaks)
+            # through the live CLAUDE_CONFIG_DIR global, same as the subprocess
+            # call above resolved it through its own isolated env -- so the
+            # in-process call needs the same CLAUDE_CONFIG_DIR to be a fair
+            # comparison. Restored in finally so this test never leaks state
+            # into whatever ran before or after it in the same process.
+            original_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+            os.environ["CLAUDE_CONFIG_DIR"] = str(fixture.claude_config_dir)
+            try:
+                direct = audit.compute_triage(
+                    fixture.live,
+                    fixture.mirror,
+                    dt.date(2026, 7, 17),
+                    config.SUPPRESS_APPLIED_DAYS,
+                    config.SUPPRESS_REJECTED_DAYS,
+                )
+            finally:
+                if original_config_dir is None:
+                    os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                else:
+                    os.environ["CLAUDE_CONFIG_DIR"] = original_config_dir
+
+            self.assertEqual(direct, cli_payload)
+
+
 class MemoryFixTests(unittest.TestCase):
     def run_fix(self, fixture, *args):
         command = [
@@ -954,6 +998,334 @@ class TriageSuppressionTests(unittest.TestCase):
             )
             result2 = json.loads(out2.stdout)
             self.assertEqual(result2["summary"]["flagged"], 1)
+
+
+def _flagged_note_fixture(root: Path, project: str = "proj", stem: str = "big") -> None:
+    """One project with a single structurally-flagged note (oversized body),
+    the same fixture shape TriageSuppressionTests uses."""
+    memory = root / "live" / project / "memory"
+    memory.mkdir(parents=True)
+    big_body = "RESOLVED\n" + ("x" * 7000)
+    (memory / f"{stem}.md").write_text(
+        "---\nname: big\ndescription: a large consolidated note fixture here\n"
+        "metadata:\n  type: project\n---\n" + big_body,
+        encoding="utf-8", newline="\n",
+    )
+    (memory / "MEMORY.md").write_text(f"# Index\n- [big]({stem}.md) - fixture\n", encoding="utf-8", newline="\n")
+
+
+def _write_rejections(pass_root: Path, entries: list[dict]) -> None:
+    pass_root.mkdir(parents=True, exist_ok=True)
+    (pass_root / "rejections.json").write_text(
+        json.dumps({"schema_version": 1, "entries": entries}), encoding="utf-8", newline="\n"
+    )
+
+
+class TriageRejectionSuppressionTests(unittest.TestCase):
+    """Rejection suppression mirrors the applied-side mechanism, reading
+    apply's rejections.json (config.pass_root()/rejections.json) instead of
+    applied patch-set manifests, and decays after --suppress-rejected-days
+    (config.SUPPRESS_REJECTED_DAYS)."""
+
+    def _run(self, root, env, *args):
+        return subprocess.run(
+            [
+                sys.executable, "-m", "memory_dream", "triage", "--format", "json",
+                "--live-root", str(root / "live"), *args,
+            ],
+            capture_output=True, text=True, env=env, check=False, cwd=REPO_ROOT,
+        )
+
+    def test_recent_rejection_suppressed_flagged_excludes_it(self):
+        # Scenario 1: rejection recorded yesterday, window 14 -> suppressed;
+        # flagged count excludes it; summary reports the rejected-suppression count.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _flagged_note_fixture(root)
+            pass_root = root / "passes"
+            claude_config_dir = root / "claude-config"
+            claude_config_dir.mkdir()
+            env = _clean_env(claude_config_dir)
+            env["MEMORY_DREAM_PASS_ROOT"] = str(pass_root)
+            now = dt.date(2026, 7, 17)
+            recent = (now - dt.timedelta(days=1)).isoformat() + "T00:00:00+00:00"
+            _write_rejections(pass_root, [
+                {"recorded_at": recent, "patch_set_id": "ps1", "proposal_id": "prop1",
+                 "project": "proj", "paths": ["big.md"]},
+            ])
+            result = json.loads(self._run(root, env, "--now", now.isoformat()).stdout)
+            self.assertEqual(result["summary"]["flagged"], 0)
+            self.assertEqual(result["summary"]["suppressed_recently_rejected"], 1)
+            self.assertEqual(result["suppressed_rejected"][0]["path"], "big.md")
+
+    def test_old_rejection_decays_and_reflags(self):
+        # Scenario 2: rejection recorded 20 days ago -> not suppressed (decay).
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _flagged_note_fixture(root)
+            pass_root = root / "passes"
+            claude_config_dir = root / "claude-config"
+            claude_config_dir.mkdir()
+            env = _clean_env(claude_config_dir)
+            env["MEMORY_DREAM_PASS_ROOT"] = str(pass_root)
+            now = dt.date(2026, 7, 17)
+            old = (now - dt.timedelta(days=20)).isoformat() + "T00:00:00+00:00"
+            _write_rejections(pass_root, [
+                {"recorded_at": old, "patch_set_id": "ps1", "proposal_id": "prop1",
+                 "project": "proj", "paths": ["big.md"]},
+            ])
+            result = json.loads(self._run(root, env, "--now", now.isoformat()).stdout)
+            self.assertEqual(result["summary"]["flagged"], 1)
+            self.assertEqual(result["summary"]["suppressed_recently_rejected"], 0)
+            self.assertEqual(result["suppressed_rejected"], [])
+
+    def test_suppress_rejected_days_flag_disables_suppression(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _flagged_note_fixture(root)
+            pass_root = root / "passes"
+            claude_config_dir = root / "claude-config"
+            claude_config_dir.mkdir()
+            env = _clean_env(claude_config_dir)
+            env["MEMORY_DREAM_PASS_ROOT"] = str(pass_root)
+            now = dt.date(2026, 7, 17)
+            recent = (now - dt.timedelta(days=1)).isoformat() + "T00:00:00+00:00"
+            _write_rejections(pass_root, [
+                {"recorded_at": recent, "patch_set_id": "ps1", "proposal_id": "prop1",
+                 "project": "proj", "paths": ["big.md"]},
+            ])
+            result = json.loads(
+                self._run(root, env, "--now", now.isoformat(), "--suppress-rejected-days", "0").stdout
+            )
+            self.assertEqual(result["summary"]["flagged"], 1)
+
+    def test_no_rejections_file_behaves_as_today(self):
+        # Scenario 7: absence of rejections.json is a no-op (covered generally by
+        # every unmodified pre-existing triage test, which never create one; this
+        # makes the claim explicit for the rejection-suppression code path itself).
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _flagged_note_fixture(root)
+            claude_config_dir = root / "claude-config"
+            claude_config_dir.mkdir()
+            env = _clean_env(claude_config_dir)
+            env["MEMORY_DREAM_PASS_ROOT"] = str(root / "passes")  # never created
+            result = json.loads(self._run(root, env, "--now", "2026-07-17").stdout)
+            self.assertEqual(result["summary"]["flagged"], 1)
+            self.assertEqual(result["summary"]["suppressed_recently_rejected"], 0)
+            self.assertEqual(result["suppressed_rejected"], [])
+
+    def test_path_both_recently_applied_and_rejected_suppressed_once(self):
+        # Scenario 3: no double count. Applied-side suppression runs first (it
+        # already existed); a path caught there is never re-counted on the
+        # rejected side, so the two suppression buckets never overlap.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _flagged_note_fixture(root)
+            pass_root = root / "passes"
+            claude_config_dir = root / "claude-config"
+            claude_config_dir.mkdir()
+            env = _clean_env(claude_config_dir)
+            env["MEMORY_DREAM_PASS_ROOT"] = str(pass_root)
+            applied_dir = pass_root / "20260101-000000"
+            applied_dir.mkdir(parents=True)
+            (applied_dir / "manifest.json").write_text(json.dumps(
+                {"proposals": [{"project": "proj", "results": [{"path": "big.md", "content": "x"}]}]}
+            ), encoding="utf-8", newline="\n")
+            (applied_dir / "apply-manifest.json").write_text("{}", encoding="utf-8", newline="\n")
+            now = dt.date(2026, 7, 17)
+            recent = (now - dt.timedelta(days=1)).isoformat() + "T00:00:00+00:00"
+            _write_rejections(pass_root, [
+                {"recorded_at": recent, "patch_set_id": "ps1", "proposal_id": "prop1",
+                 "project": "proj", "paths": ["big.md"]},
+            ])
+            result = json.loads(self._run(root, env, "--now", now.isoformat()).stdout)
+            self.assertEqual(result["summary"]["flagged"], 0)
+            self.assertEqual(result["summary"]["suppressed_recently_applied"], 1)
+            self.assertEqual(result["summary"]["suppressed_recently_rejected"], 0)
+            self.assertEqual(result["suppressed_rejected"], [])
+            self.assertEqual(len(result["suppressed"]), 1)
+
+
+class TriageDeferralStreakTests(unittest.TestCase):
+    """Repeat-deferral visibility. deferral-streaks.json lives directly
+    under pass_root() (a sibling of the dated pass dirs, like rejections.json)
+    and is advanced once per DISTINCT newest pass dir (by report.json mtime),
+    never by repeated triage runs against the same pass."""
+
+    def _run(self, live_root, env, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "memory_dream", "triage", "--format", "json",
+             "--live-root", str(live_root), *args],
+            capture_output=True, text=True, env=env, check=False, cwd=REPO_ROOT,
+        )
+
+    def _write_report(self, pass_root: Path, name: str, deferred: list[dict], mtime_offset: float) -> None:
+        pass_dir = pass_root / name
+        pass_dir.mkdir(parents=True)
+        report_path = pass_dir / "report.json"
+        report_path.write_text(json.dumps({"deferred": deferred}), encoding="utf-8", newline="\n")
+        t = time.time() + mtime_offset
+        os.utime(report_path, (t, t))
+
+    def _env(self, root: Path, pass_root: Path) -> dict:
+        claude_config_dir = root / "claude-config"
+        claude_config_dir.mkdir(exist_ok=True)
+        env = _clean_env(claude_config_dir)
+        env["MEMORY_DREAM_PASS_ROOT"] = str(pass_root)
+        return env
+
+    def test_three_consecutive_passes_then_reset(self):
+        # Scenario 4: a key deferred in 3 consecutive passes is named with
+        # count 3; a subsequent pass without it resets (drops) the streak.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live = root / "live"
+            live.mkdir()
+            pass_root = root / "passes"
+            env = self._env(root, pass_root)
+            entry = {"project": "proj", "path": "note.md", "reason": "cluster-size-cap"}
+
+            self._write_report(pass_root, "p1", [entry], 0)
+            r1 = json.loads(self._run(live, env).stdout)
+            # Count 1 is not yet a "repeat" (>=2 consecutive passes).
+            self.assertEqual(r1["repeat_deferral"], [])
+
+            self._write_report(pass_root, "p2", [entry], 5)
+            r2 = json.loads(self._run(live, env).stdout)
+            by_key2 = {(r["project"], r.get("path")): r["count"] for r in r2["repeat_deferral"]}
+            self.assertEqual(by_key2[("proj", "note.md")], 2)
+
+            # A second triage run against the SAME newest pass (p2) must not
+            # inflate the streak further (idempotent per pass).
+            r2b = json.loads(self._run(live, env).stdout)
+            by_key2b = {(r["project"], r.get("path")): r["count"] for r in r2b["repeat_deferral"]}
+            self.assertEqual(by_key2b[("proj", "note.md")], 2)
+
+            self._write_report(pass_root, "p3", [entry], 10)
+            r3 = json.loads(self._run(live, env).stdout)
+            by_key3 = {(r["project"], r.get("path")): r["count"] for r in r3["repeat_deferral"]}
+            self.assertEqual(by_key3[("proj", "note.md")], 3)
+            human3 = self._run(live, env, "--format", "human").stdout
+            self.assertIn("note.md", human3)
+            self.assertIn("3", human3)
+            self.assertTrue(human3.rstrip().endswith("flagged:0"))
+
+            # Scenario: a pass without the key resets/removes it.
+            self._write_report(pass_root, "p4", [], 15)
+            r4 = json.loads(self._run(live, env).stdout)
+            self.assertEqual(r4["repeat_deferral"], [])
+
+    def test_cluster_size_cap_key_survives_member_growth(self):
+        # Scenario 5: cluster-size-cap deferred entries carry a bare path, so
+        # a cluster growing by one member (a different note's own path is
+        # unaffected) still matches on that unchanged (project, path) pair.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live = root / "live"
+            live.mkdir()
+            pass_root = root / "passes"
+            env = self._env(root, pass_root)
+            entry = {"project": "proj", "path": "overflow.md", "reason": "cluster-size-cap"}
+            self._write_report(pass_root, "p1", [entry], 0)
+            json.loads(self._run(live, env).stdout)
+            # p2's cluster grew by one member (an unrelated extra note also
+            # deferred), but overflow.md's own path is unchanged.
+            self._write_report(
+                pass_root, "p2",
+                [entry, {"project": "proj", "path": "another.md", "reason": "cluster-size-cap"}],
+                5,
+            )
+            r2 = json.loads(self._run(live, env).stdout)
+            by_key = {(r["project"], r.get("path")): r["count"] for r in r2["repeat_deferral"]}
+            self.assertEqual(by_key[("proj", "overflow.md")], 2)
+
+    def test_per_pass_cap_cluster_id_fallback_documented_fidelity_limit(self):
+        # LEGACY reports only: per-pass-cap entries written before member
+        # paths were persisted carry ONLY cluster_id. cluster_id is a hash of
+        # the member path set (assemble.stable_id), so for these entries a
+        # cluster that gains or loses a member gets a NEW cluster_id and the
+        # streak does NOT continue across a membership change. Current builds
+        # persist paths (assemble.py per-pass-cap deferral) and take the
+        # overlap-matching path tested below; this documents the legacy
+        # fidelity limit rather than hiding it.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live = root / "live"
+            live.mkdir()
+            pass_root = root / "passes"
+            env = self._env(root, pass_root)
+            self._write_report(
+                pass_root, "p1",
+                [{"project": "proj", "cluster_id": "cidA", "reason": "per-pass-cap"}], 0,
+            )
+            r1 = json.loads(self._run(live, env).stdout)
+            self.assertEqual(r1["repeat_deferral"], [])
+            # Same logical cluster, but its member set (and therefore its
+            # stable_id-derived cluster_id) changed between passes.
+            self._write_report(
+                pass_root, "p2",
+                [{"project": "proj", "cluster_id": "cidB", "reason": "per-pass-cap"}], 5,
+            )
+            r2 = json.loads(self._run(live, env).stdout)
+            # cidA's streak is dropped (reset); cidB starts fresh at 1, so
+            # nothing reaches the >=2 "repeat" threshold this pass.
+            self.assertEqual(r2["repeat_deferral"], [])
+
+    def test_per_pass_cap_paths_overlap_continues_streak_across_membership_change(self):
+        # Current builds persist a deferred cluster's member paths, so streak
+        # identity is path-set OVERLAP: the same logical cluster keeps its
+        # streak even though gaining a member changed its cluster_id hash.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live = root / "live"
+            live.mkdir()
+            pass_root = root / "passes"
+            env = self._env(root, pass_root)
+            self._write_report(
+                pass_root, "p1",
+                [{"project": "proj", "cluster_id": "cidA", "paths": ["a.md", "b.md"], "reason": "per-pass-cap"}], 0,
+            )
+            r1 = json.loads(self._run(live, env).stdout)
+            self.assertEqual(r1["repeat_deferral"], [])
+            self._write_report(
+                pass_root, "p2",
+                [{"project": "proj", "cluster_id": "cidB", "paths": ["a.md", "b.md", "c.md"], "reason": "per-pass-cap"}], 5,
+            )
+            r2 = json.loads(self._run(live, env).stdout)
+            clusters = [r for r in r2["repeat_deferral"] if r.get("cluster_id")]
+            self.assertEqual(len(clusters), 1)
+            self.assertEqual(clusters[0]["count"], 2)
+            self.assertEqual(clusters[0]["cluster_id"], "cidB")
+            self.assertEqual(clusters[0]["paths"], ["a.md", "b.md", "c.md"])
+
+    def test_deleting_old_pass_dirs_preserves_streak_file(self):
+        # Scenario 6: pruning dated pass dirs (the retention advisory's
+        # suggested cleanup) must not affect the durable streak file, which
+        # lives directly under pass_root(), a sibling of the dated dirs.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live = root / "live"
+            live.mkdir()
+            pass_root = root / "passes"
+            env = self._env(root, pass_root)
+            entry = {"project": "proj", "path": "note.md", "reason": "cluster-size-cap"}
+            self._write_report(pass_root, "p1", [entry], 0)
+            json.loads(self._run(live, env).stdout)
+            self._write_report(pass_root, "p2", [entry], 5)
+            r2 = json.loads(self._run(live, env).stdout)
+            by_key2 = {(r["project"], r.get("path")): r["count"] for r in r2["repeat_deferral"]}
+            self.assertEqual(by_key2[("proj", "note.md")], 2)
+
+            streak_path = pass_root / "deferral-streaks.json"
+            self.assertTrue(streak_path.is_file())
+            shutil.rmtree(pass_root / "p1")
+            shutil.rmtree(pass_root / "p2")
+            self.assertTrue(streak_path.is_file())
+
+            r3 = json.loads(self._run(live, env).stdout)
+            by_key3 = {(r["project"], r.get("path")): r["count"] for r in r3["repeat_deferral"]}
+            self.assertEqual(by_key3[("proj", "note.md")], 2)
 
 
 if __name__ == "__main__":

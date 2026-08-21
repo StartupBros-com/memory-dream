@@ -71,7 +71,7 @@ Every gate exists because a real defect got through without it. This pipeline ra
 ## Honest limits
 
 - The trust model is a single-operator machine. The consent trace is defense in depth against accidental auto-apply, not cryptographic proof against a compromised orchestrator. Read [SECURITY.md](SECURITY.md) before installing on anything shared.
-- The index load cap (200 lines / 25 KiB) was measured against Claude Code v2.1.211 and is not a documented API. `doctor` restates this; [docs/TUNING.md](docs/TUNING.md) covers re-measuring it.
+- The index load cap (200 lines / 25 KiB) was measured against the Claude Code version recorded in `config.COMPATIBILITY_RECORD` and is not a documented API. `doctor` compares your installed CLI version against that record; [docs/TUNING.md](docs/TUNING.md) covers re-measuring it.
 - Thresholds were calibrated on one ~500-note English corpus. They are defaults, not truths, and every one is configurable.
 
 ## Docs

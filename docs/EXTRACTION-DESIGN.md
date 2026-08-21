@@ -82,8 +82,9 @@ Shared rules for every ported module:
 - Decay constants (0.3 threshold, 90-day half-life) deduplicated into named
   config values (they are inline literals at 3 call sites today).
 - Index-cap accounting (200 lines / 25 KiB, HTML-comment stripping) stays, with
-  the version caveat surfaced in `doctor` and TUNING.md: measured against
-  Claude Code v2.1.211, configurable via config.
+  the version caveat surfaced in `doctor` and TUNING.md: measured against the
+  Claude Code version in `config.COMPATIBILITY_RECORD`, configurable via
+  config.
 - Tokenizer: word tokenization becomes Unicode-aware (`\w+` with re.UNICODE);
   note in TUNING.md that Jaccard thresholds were calibrated on an English corpus.
 - Orphaned `*.dream-tmp` staging files: `doctor` and the full audit warn about

@@ -11,14 +11,17 @@ backup (always: every file about to be written or deleted is copied into the
 patch set before the first live write, so `restore` can reverse this apply)
 -> per-proposal destination confinement + sensitive-note refusal +
 source-digest re-verification -> per-project stage-then-commit with rollback
-and a single index reconciliation -> apply manifest + machine-parseable
-completion line. A vanished project or a changed source skips its proposals
-rather than aborting the batch.
+and a single index reconciliation -> rejection recording (every presented
+proposal the operator did not approve, appended to rejections.json beside
+the pass directories) -> apply manifest + machine-parseable completion
+line. A vanished project or a changed source skips its proposals rather
+than aborting the batch.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -33,6 +36,7 @@ from memory_dream import compat, config, transcript
 APPLY_SCHEMA_VERSION = 1
 COMPLETION_PREFIX = "DREAM-APPLY-COMPLETE"
 RESTORE_COMPLETE_PREFIX = "RESTORE-COMPLETE"
+REJECTIONS_FILENAME = "rejections.json"
 
 
 # --- Consent-trace verification ----------------------------------------------
@@ -267,6 +271,112 @@ def snapshot_patch_set(
     except OSError as error:
         return f"snapshot failed, refusing before any live write: {error}"
     return None
+
+
+# --- Rejection recording -------------------------------------------------
+
+
+def rejected_proposal_entries(
+    manifest: dict[str, Any], approved: set[str], recorded_at: str
+) -> list[dict[str, Any]]:
+    """Rejected = presented - approved, one entry per declined proposal.
+
+    "Presented" is every proposal in ``manifest.json``'s ``proposals`` list --
+    the exact set `preview.html` rendered one card per, including a no-op
+    ``action: "leave"`` card. A cluster's notes that never became a proposal
+    at all (deferred past the per-pass cluster cap, or pulled to
+    manual_review for a sensitive filename) were never presented and
+    correctly never appear here: those live only in `plan.json`/`report.json`,
+    which this function -- and apply generally -- never reads.
+
+    Each entry's ``paths`` is that proposal's OWN ``sources[].path`` union
+    ``results[].path`` (an archive proposal's is just ``["MEMORY.md"]``; a
+    leave proposal's is empty, since both carry no results and no non-index
+    sources). The survivor path is always already one of these -- the
+    manifest schema (assemble.py) writes it into ``results[0]`` and, when it
+    pre-existed, into ``sources`` too -- so no separate survivor field needs
+    parsing here, unlike `audit.recently_applied_paths`, which also has to
+    cope with an early-wave manifest shape that stored the survivor as a
+    bare path string outside sources/results; that legacy shape predates
+    this apply-time record and never reaches it.
+    """
+    entries: list[dict[str, Any]] = []
+    for proposal in manifest.get("proposals", []):
+        if not isinstance(proposal, dict):
+            continue
+        proposal_id = proposal.get("id")
+        if not isinstance(proposal_id, str) or proposal_id in approved:
+            continue
+        paths: set[str] = set()
+        for result in proposal.get("results") or []:
+            if isinstance(result, dict) and isinstance(result.get("path"), str):
+                paths.add(result["path"])
+        for source in proposal.get("sources") or []:
+            if isinstance(source, dict) and isinstance(source.get("path"), str):
+                paths.add(source["path"])
+        entries.append(
+            {
+                "recorded_at": recorded_at,
+                "patch_set_id": manifest.get("id"),
+                "proposal_id": proposal_id,
+                "project": proposal.get("project"),
+                "paths": sorted(paths),
+            }
+        )
+    return entries
+
+
+def record_rejections(entries: list[dict[str, Any]]) -> None:
+    """Append ``entries`` to ``<config.pass_root()>/rejections.json`` -- a
+    SIBLING of the dated patch-set directories, never inside one. The
+    retention advisory's suggested cleanup deletes whole pass directories;
+    a rejection record living inside one would be erased right along with
+    it, silently un-suppressing a proposal the operator already declined.
+    Nothing here ever prunes the file -- a reader filters by each entry's
+    own ``recorded_at`` -- so it only ever grows.
+
+    Malformed existing content is renamed aside (never silently discarded
+    or overwritten) and a fresh file is started. This is a best-effort
+    durability record, not a safety gate: every failure mode here must
+    leave an otherwise-complete apply's exit code untouched, so the caller
+    wraps this call and downgrades any OSError to a warning.
+    """
+    if not entries:
+        return
+    root = config.pass_root()
+    root.mkdir(parents=True, exist_ok=True)
+    compat.restrict_permissions(root)
+    path = root / REJECTIONS_FILENAME
+    existing: list[Any] = []
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+                raise ValueError('rejections.json must hold a JSON object with an "entries" list')
+            existing = payload["entries"]
+        except (OSError, json.JSONDecodeError, ValueError):
+            corrupt = path.with_name(f"{REJECTIONS_FILENAME}.corrupt-{time.time_ns()}")
+            try:
+                path.replace(corrupt)
+                print(
+                    f"memory-dream apply: WARNING corrupt {REJECTIONS_FILENAME} renamed aside to"
+                    f" {corrupt.name}; starting a fresh file",
+                    file=sys.stderr,
+                )
+            except OSError as rename_error:
+                print(
+                    f"memory-dream apply: WARNING corrupt {REJECTIONS_FILENAME} could not be renamed"
+                    f" aside ({rename_error}); overwriting it",
+                    file=sys.stderr,
+                )
+            existing = []
+    AUDIT.atomic_write(
+        path,
+        (
+            json.dumps({"schema_version": APPLY_SCHEMA_VERSION, "entries": existing + entries}, indent=2, sort_keys=True)
+            + "\n"
+        ).encode("utf-8"),
+    )
 
 
 # --- Apply --------------------------------------------------------------------
@@ -652,6 +762,22 @@ def _run_apply_locked(
             )
             return 1
     else:
+        # Compaction canary: the same advisory probe `doctor` runs, against
+        # the same cwd-derived transcripts directory. A drift finding here
+        # means the consent-trace verification below may currently be
+        # forgeable (the v0.2.1 incident shape: a compaction turn whose flag
+        # keys were renamed upstream reads as an ordinary operator turn).
+        # Warn-only -- it never gates and never changes this function's exit
+        # code -- but it must print BEFORE the verification it is warning
+        # about, so the operator sees it before any refusal reason.
+        canary_status, canary_detail = transcript.compaction_canary(transcript.transcripts_dir_for(Path.cwd()))
+        if canary_status == "drift":
+            print(
+                "memory-dream apply: WARNING consent-gate canary reports transcript schema "
+                f"drift ({canary_detail}) — the consent-trace check below may be unreliable; "
+                "run `memory-dream doctor`",
+                file=sys.stderr,
+            )
         if transcript_path is None:
             print("memory-dream apply: refusing, --consent trace requires --transcript", file=sys.stderr)
             return 1
@@ -774,6 +900,16 @@ def _run_apply_locked(
     deleted = sorted(
         (entry["project"], rel) for entry in results for rel in entry.get("deleted", [])
     )
+    # Rejection recording: durably note which PRESENTED proposals the
+    # operator did not approve, so a later triage pass can suppress
+    # re-flagging them. Best-effort and never a gate -- a write failure here
+    # must not turn this otherwise-complete apply into a failed one.
+    recorded_at = dt.datetime.fromtimestamp(now, tz=dt.timezone.utc).isoformat()
+    try:
+        record_rejections(rejected_proposal_entries(manifest, approved, recorded_at))
+    except OSError as error:
+        print(f"memory-dream apply: WARNING could not record rejections: {error}", file=sys.stderr)
+
     # Single-token next= keeps the completion line whitespace-splittable; the
     # human-readable hint (config.MIRROR_PUSH_HINT is free text) prints after.
     next_step = "mirror-sync" if mirror_root is not None else "none"

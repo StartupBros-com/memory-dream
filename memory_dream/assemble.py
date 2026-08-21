@@ -128,7 +128,14 @@ def build_clusters(
     clusters.sort(key=lambda cluster: (-cluster["top_score"], cluster["project"], cluster["cluster_id"]))
     kept_clusters = clusters[:max_clusters]
     for cluster in clusters[max_clusters:]:
-        deferred.append({"project": cluster["project"], "cluster_id": cluster["cluster_id"], "reason": "per-pass-cap"})
+        deferred.append(
+            {
+                "project": cluster["project"],
+                "cluster_id": cluster["cluster_id"],
+                "paths": [note["path"] for note in cluster["notes"]],
+                "reason": "per-pass-cap",
+            }
+        )
     return kept_clusters, deferred, manual_review
 
 
