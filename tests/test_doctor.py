@@ -266,16 +266,18 @@ class DoctorCompactionCanaryLineTests(unittest.TestCase):
 
 
 def _write_executable(path: Path, script: str, windows_script: str) -> Path:
-    """Write a runnable stub for the version probe. POSIX gets `script` as a
-    shebang shell file at `path`; Windows gets `windows_script` as
-    `path.with_suffix(".bat")` because CreateProcess cannot execute shebang
-    text files (WinError 193). Callers keep passing the extensionless `path`
-    to the probe -- shutil.which resolves the .bat twin via PATHEXT, the same
-    way a real `claude.cmd` install resolves."""
+    """Write a runnable stub for the version probe and return the path the
+    probe should be pointed at. POSIX gets `script` as a shebang shell file
+    at `path`; Windows gets `windows_script` at `path.with_suffix(".bat")`
+    because CreateProcess cannot execute shebang text files (WinError 193).
+    The .bat path itself is returned: Python 3.10's shutil.which does not
+    apply PATHEXT to a command carrying a directory part (3.12's rewrite
+    does), so an extensionless name would resolve on some matrix legs and
+    not others."""
     if os.name == "nt":
         bat = path.with_suffix(".bat")
         bat.write_text(windows_script, encoding="utf-8", newline="\r\n")
-        return path
+        return bat
     path.write_text(script, encoding="utf-8", newline="\n")
     path.chmod(0o755)
     return path

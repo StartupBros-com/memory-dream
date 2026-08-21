@@ -75,8 +75,15 @@ def _detect_installed_claude_version(binary: str = "claude", timeout: float = 5.
 
     Every failure mode returns None ("unverifiable"), never raises: a missing
     binary, a nonzero exit, output with no recognizable dotted version
-    number, or a hang past `timeout` (mirrors the subprocess timeout pattern
-    used by the open-preview code path above).
+    number, or a hang past `timeout`.
+
+    Deliberately Popen, not subprocess.run: run()'s timeout handling kills
+    only the direct child and then re-reads the pipes, which on Windows
+    blocks until every GRANDCHILD that inherited them exits -- and a real
+    Windows `claude` is a .cmd wrapper spawning node.exe, exactly that
+    shape. On timeout this kills, reaps, and abandons the pipes unread so
+    the probe honors its promptness contract; the leaked descriptors close
+    when the process object is collected.
     """
     import re
     import shutil
@@ -86,14 +93,26 @@ def _detect_installed_claude_version(binary: str = "claude", timeout: float = 5.
     if not resolved:
         return None
     try:
-        result = subprocess.run(
-            [resolved, "--version"], capture_output=True, text=True, timeout=timeout, check=False
+        proc = subprocess.Popen(
+            [resolved, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
-    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError):
         return None
-    if result.returncode != 0:
+    try:
+        stdout, _stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         return None
-    match = re.search(r"\d+\.\d+\.\d+", result.stdout)
+    except (OSError, subprocess.SubprocessError):
+        proc.kill()
+        return None
+    if proc.returncode != 0:
+        return None
+    match = re.search(r"\d+\.\d+\.\d+", stdout)
     return match.group(0) if match else None
 
 
