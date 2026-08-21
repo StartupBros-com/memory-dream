@@ -19,11 +19,12 @@ truths. Two categories deserve explicit distrust:
 
 - **The index caps (`INDEX_LOAD_MAX_LINES`, `INDEX_LOAD_MAX_BYTES`) are
   version-measured, not corpus-measured.** They describe Claude Code's own
-  per-project memory-load accounting as observed against Claude Code
-  v2.1.211. That accounting is not a documented, versioned API of Claude
-  Code — it can drift on a CLI upgrade without notice. Re-run
-  `memory-dream doctor` after upgrading Claude Code and re-measure if the
-  caveat it prints looks stale.
+  per-project memory-load accounting as observed against the Claude Code
+  version recorded in `config.COMPATIBILITY_RECORD`. That accounting is not
+  a documented, versioned API of Claude Code — it can drift on a CLI
+  upgrade without notice. `memory-dream doctor` shells out to `claude
+  --version` and compares it against the record itself now, reporting drift
+  as an advisory; re-measure if it reports a mismatch.
 - **The Jaccard thresholds (`MERGE_JACCARD`, `SIBLING_DESC_JACCARD`) are
   English-corpus-calibrated.** The tokenizer underneath them is
   Unicode-aware (`\w+` with `re.UNICODE`), so it will not crash or silently
@@ -50,7 +51,7 @@ truths. Two categories deserve explicit distrust:
 
 | Name | Default | Controls | Provenance | Too low | Too high | Override |
 |---|---|---|---|---|---|---|
-| `INDEX_LOAD_MAX_LINES` | 200 | Loader-visible index line cap. | **Version-measured** against Claude Code v2.1.211's load accounting — not a documented API, re-verify after CLI upgrades. | Over-conservative refusals of legitimate index growth if the real cap is actually higher. | Notes silently fall outside what a session actually loads while this tool reports the index as healthy, if the real cap shrank. | Env/config only; `memory-dream doctor` restates the current value and caveat. |
+| `INDEX_LOAD_MAX_LINES` | 200 | Loader-visible index line cap. | **Version-measured** against the Claude Code version in `config.COMPATIBILITY_RECORD`'s load accounting — not a documented API, re-verify after CLI upgrades. | Over-conservative refusals of legitimate index growth if the real cap is actually higher. | Notes silently fall outside what a session actually loads while this tool reports the index as healthy, if the real cap shrank. | Env/config only; `memory-dream doctor` compares the installed CLI version against the record and reports drift. |
 | `INDEX_LOAD_MAX_BYTES` | 25600 (25 KiB) | Loader-visible index byte cap. | Same as above. | Same as above. | Same as above. | Env/config only. |
 | `INDEX_BUDGET_FRACTION` | 0.7 | Fraction of the load cap that trips an early repo-hygiene warning. | Corpus-calibrated. | Warnings fire with plenty of headroom left; becomes noise. | Warning doesn't fire until the index is nearly or already at the hard cap, leaving no runway to fix it. | Env/config only. |
 | `AUDIT_MAX_INDEX_BYTES` | 32768 | Repo-hygiene audit ceiling (distinct from the loader cap — roomier, informational). | Corpus-calibrated. | Audit nags well before the loader cap actually matters. | Audit stays quiet on an index already well past the load cap. | `memory-dream audit --max-index-bytes`, env, or config. |

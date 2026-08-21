@@ -61,6 +61,60 @@ def _add_open_preview_parser(subparsers) -> None:
     p.set_defaults(func=_run_open_preview)
 
 
+def _detect_installed_claude_version(binary: str = "claude", timeout: float = 5.0) -> str | None:
+    """Best-effort `<binary> --version` probe for the doctor "index cap"
+    check. `binary` and `timeout` are parameters (not hardcoded) so tests can
+    point this at a stub script instead of a real `claude` install.
+
+    Every failure mode returns None ("unverifiable"), never raises: a missing
+    binary, a nonzero exit, output with no recognizable dotted version
+    number, or a hang past `timeout` (mirrors the subprocess timeout pattern
+    used by the open-preview code path above).
+    """
+    import re
+    import shutil
+    import subprocess
+
+    resolved = shutil.which(binary)
+    if not resolved:
+        return None
+    try:
+        result = subprocess.run(
+            [resolved, "--version"], capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(r"\d+\.\d+\.\d+", result.stdout)
+    return match.group(0) if match else None
+
+
+def _index_cap_check(installed_version: str | None) -> tuple[str, bool, str, bool]:
+    """Build the doctor "index cap" (label, ok, detail, fatal) tuple.
+
+    `installed_version` is the already-probed installed Claude Code version
+    (or None when it could not be determined) -- passed in rather than
+    probed here so the comparison logic is directly unit-testable without a
+    real `claude` binary. Always advisory (fatal=False): drift or an
+    inability to verify never changes doctor's default exit code.
+    """
+    record = config.COMPATIBILITY_RECORD
+    measured_version = record["claude_code_version"]
+    cap = f"{config.INDEX_LOAD_MAX_LINES} lines / {config.INDEX_LOAD_MAX_BYTES} bytes"
+    base = f"{cap} — measured against Claude Code {measured_version} (docs/TUNING.md)"
+    if installed_version is None:
+        return ("index cap", True, f"{base}; installed version: unverifiable — could not determine installed version", False)
+    if installed_version == measured_version:
+        return ("index cap", True, f"{base}; installed {installed_version} matches", False)
+    return (
+        "index cap",
+        False,
+        f"{base}; installed {installed_version} differs from measured {measured_version} — re-verify",
+        False,
+    )
+
+
 def _run_doctor(args) -> int:
     import importlib.util
     import os
@@ -126,14 +180,7 @@ def _run_doctor(args) -> int:
     for tool in ("git", "gh"):
         checks.append((f"{tool} (optional)", True, shutil.which(tool) or "not found — repo-grounding checks degrade to note-only", False))
 
-    checks.append(
-        (
-            "index cap",
-            True,
-            f"{config.INDEX_LOAD_MAX_LINES} lines / {config.INDEX_LOAD_MAX_BYTES} bytes — measured against Claude Code v2.1.211; re-verify after CLI upgrades (docs/TUNING.md)",
-            False,
-        )
-    )
+    checks.append(_index_cap_check(_detect_installed_claude_version()))
 
     hard_failures = [c for c in checks if not c[1] and c[3]]
     advisories = [c for c in checks if not c[1] and not c[3]]

@@ -31,9 +31,24 @@ TRIAGE_MAX_NOTES_PER_CLUSTER = 8
 TRIAGE_DESC_MIN_WORDS = 5  # descriptions shorter than this are flagged vague
 SUPPRESS_APPLIED_DAYS = 14  # don't re-flag notes a recent pass just touched
 
+# --- Compatibility record ---------------------------------------------------
+# Single source of truth for the "measured against Claude Code vX.Y.Z" claim
+# repeated across docs and doctor output. This is the only literal version
+# string in the repo; every other site (code and prose) cites
+# COMPATIBILITY_RECORD by name instead of restating it. `doctor`'s "index
+# cap" check (cli.py) shells out to `claude --version` and compares the
+# installed version against claude_code_version below, reporting
+# ok/drift/unverifiable — advisory, never fatal.
+COMPATIBILITY_RECORD: dict[str, object] = {
+    "claude_code_version": "2.1.211",
+    "index_load_max_lines": 200,
+    "index_load_max_bytes": 25 * 1024,
+}
+
 # --- Index budget (the loader-visible MEMORY.md surface) -------------------
-# Measured against Claude Code v2.1.211's per-project load accounting; the cap
-# is not a documented API and can drift with the CLI. `doctor` restates this.
+# Cap values measured against COMPATIBILITY_RECORD's Claude Code version; the
+# cap is not a documented API and can drift with the CLI. `doctor` compares
+# the installed CLI version against the record and reports drift.
 INDEX_LOAD_MAX_LINES = 200
 INDEX_LOAD_MAX_BYTES = 25 * 1024
 INDEX_BUDGET_FRACTION = 0.7  # repository-hygiene warning threshold

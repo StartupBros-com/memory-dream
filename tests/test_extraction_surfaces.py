@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path, PureWindowsPath
 
@@ -31,7 +32,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from memory_dream import audit as AUDIT  # noqa: E402
-from memory_dream import compat, config, transcript  # noqa: E402
+from memory_dream import cli, compat, config, transcript  # noqa: E402
 
 # --- Environment isolation helpers ------------------------------------------
 
@@ -545,6 +546,120 @@ class DoctorTests(unittest.TestCase):
             result = run_cli("doctor", cwd=REPO_ROOT, env=env)
             self.assertEqual(result.returncode, 1)
             self.assertTrue(_doctor_line(result.stdout, "live root").startswith("FAIL"))
+
+    def test_index_cap_line_unverifiable_when_claude_absent_from_path(self):
+        # Full integration path: PATH scoped to a dir with no `claude` binary
+        # on it, so shutil.which("claude") inside the real doctor subprocess
+        # genuinely finds nothing. Exit code must stay 0 -- the check is
+        # advisory even when it cannot verify anything.
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            (claude_dir / "projects").mkdir(parents=True)
+            empty_path_dir = Path(temp) / "empty-path"
+            empty_path_dir.mkdir()
+            env = subprocess_env(claude_dir)
+            env["PATH"] = str(empty_path_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "index cap")
+            self.assertTrue(line.startswith("ok") or line.startswith("warn"), line)
+            self.assertIn("unverifiable", line.lower())
+
+
+# =============================================================================
+# 8. index-cap compatibility record (single source of the measured-version claim)
+# =============================================================================
+
+
+def _write_executable(path: Path, script: str) -> Path:
+    path.write_text(script, encoding="utf-8", newline="\n")
+    path.chmod(0o755)
+    return path
+
+
+class InstalledVersionProbeTests(unittest.TestCase):
+    """cli._detect_installed_claude_version: every failure mode degrades to
+    None ("unverifiable"), never an exception, never a hang."""
+
+    def test_reports_version_parsed_from_stdout(self):
+        # An arbitrary version distinct from config.COMPATIBILITY_RECORD's,
+        # to prove this parses whatever the binary prints rather than
+        # coincidentally matching the record.
+        with tempfile.TemporaryDirectory() as temp:
+            stub = _write_executable(Path(temp) / "claude", "#!/bin/sh\necho '9.8.7 (Claude Code)'\nexit 0\n")
+            self.assertEqual(cli._detect_installed_claude_version(binary=str(stub)), "9.8.7")
+
+    def test_absent_binary_returns_none(self):
+        self.assertIsNone(cli._detect_installed_claude_version(binary="definitely-not-a-real-claude-binary-xyz"))
+
+    def test_nonzero_exit_returns_none(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stub = _write_executable(Path(temp) / "claude", "#!/bin/sh\necho 'boom' >&2\nexit 1\n")
+            self.assertIsNone(cli._detect_installed_claude_version(binary=str(stub)))
+
+    def test_garbage_output_returns_none(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stub = _write_executable(Path(temp) / "claude", "#!/bin/sh\necho 'banana'\nexit 0\n")
+            self.assertIsNone(cli._detect_installed_claude_version(binary=str(stub)))
+
+    def test_hang_past_timeout_returns_none_promptly(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stub = _write_executable(Path(temp) / "claude", "#!/bin/sh\nsleep 30\necho '9.8.7'\n")
+            started = time.monotonic()
+            result = cli._detect_installed_claude_version(binary=str(stub), timeout=0.3)
+            elapsed = time.monotonic() - started
+            self.assertIsNone(result)
+            self.assertLess(elapsed, 5.0, "probe did not return promptly on timeout")
+
+
+class IndexCapCheckTests(unittest.TestCase):
+    def test_match_is_ok_and_names_both_versions(self):
+        record_version = config.COMPATIBILITY_RECORD["claude_code_version"]
+        label, ok, detail, fatal = cli._index_cap_check(record_version)
+        self.assertEqual(label, "index cap")
+        self.assertTrue(ok)
+        self.assertFalse(fatal)
+        self.assertIn(record_version, detail)
+
+    def test_mismatch_is_advisory_not_ok_and_names_both_versions(self):
+        record_version = config.COMPATIBILITY_RECORD["claude_code_version"]
+        label, ok, detail, fatal = cli._index_cap_check("9.9.9")
+        self.assertEqual(label, "index cap")
+        self.assertFalse(ok)
+        self.assertFalse(fatal)  # advisory: never fatal, never changes doctor's exit contract
+        self.assertIn(record_version, detail)
+        self.assertIn("9.9.9", detail)
+
+    def test_unverifiable_when_version_undetected(self):
+        label, ok, detail, fatal = cli._index_cap_check(None)
+        self.assertEqual(label, "index cap")
+        self.assertTrue(ok)  # advisory-ok: unverifiable never fails doctor
+        self.assertFalse(fatal)
+        self.assertIn("unverifiable", detail.lower())
+
+
+class CompatibilityRecordSingleSourceTests(unittest.TestCase):
+    """The compatibility record is the only place the measured version
+    literal lives; every prose/code site cites it by name instead of
+    restating it."""
+
+    def test_version_literal_appears_in_exactly_one_file(self):
+        version = config.COMPATIBILITY_RECORD["claude_code_version"]
+        excluded_dirs = {".git", ".claude", "docs/plans", "docs/ideation"}
+        hits = []
+        for path in REPO_ROOT.rglob("*"):
+            if not path.is_file() or path.suffix not in (".py", ".md"):
+                continue
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            if any(rel == d or rel.startswith(d + "/") for d in excluded_dirs):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if version in text:
+                hits.append(rel)
+        self.assertEqual(hits, ["memory_dream/config.py"], f"version literal leaked into: {hits}")
 
 
 if __name__ == "__main__":

@@ -653,10 +653,11 @@ def duplicated_descriptions(records: dict[str, dict[str, Any]]) -> set[str]:
 def effective_index_size(index_text: str) -> tuple[int, int]:
     """(lines, bytes) of MEMORY.md as Claude Code measures its load cap: YAML
     frontmatter and block-level HTML comments are stripped before counting
-    (measured against Claude Code v2.1.211's accounting). config.INDEX_LOAD_MAX_LINES
-    / config.INDEX_LOAD_MAX_BYTES is what actually loads; the rest is silently
-    invisible to every session. `triage` warns at config.INDEX_BUDGET_FRACTION of
-    the cap, matching Claude Code's own over-limit rewrite trigger."""
+    (measured against the Claude Code version in config.COMPATIBILITY_RECORD's
+    accounting). config.INDEX_LOAD_MAX_LINES / config.INDEX_LOAD_MAX_BYTES is
+    what actually loads; the rest is silently invisible to every session.
+    `triage` warns at config.INDEX_BUDGET_FRACTION of the cap, matching
+    Claude Code's own over-limit rewrite trigger."""
     _fm, body = split_frontmatter_raw(index_text)
     body = re.sub(r"(?s)<!--.*?-->", "", body)
     return len(body.splitlines()), len(body.encode("utf-8"))
