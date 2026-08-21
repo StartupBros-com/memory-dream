@@ -30,6 +30,7 @@ TRIAGE_MAX_CLUSTERS = 12  # per-pass cluster cap (overflow -> deferred)
 TRIAGE_MAX_NOTES_PER_CLUSTER = 8
 TRIAGE_DESC_MIN_WORDS = 5  # descriptions shorter than this are flagged vague
 SUPPRESS_APPLIED_DAYS = 14  # don't re-flag notes a recent pass just touched
+SUPPRESS_REJECTED_DAYS = 14  # don't re-flag paths a recently REJECTED proposal covered
 
 # --- Compatibility record ---------------------------------------------------
 # Single source of truth for the "measured against Claude Code vX.Y.Z" claim

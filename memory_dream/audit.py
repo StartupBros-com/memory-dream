@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from memory_dream import config
+from memory_dream import compat, config
 
 ALLOWED_TYPES = {"user", "feedback", "project", "reference"}
 YAML_LITERALS = {"null", "~", "true", "false", "none"}
@@ -751,6 +751,257 @@ def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     return recently_applied
 
 
+# Mirrors apply.REJECTIONS_FILENAME (apply.py:39). Duplicated here (not
+# imported) because apply.py already imports this module (`from memory_dream
+# import audit as AUDIT`); importing apply.py back would be circular.
+REJECTIONS_FILENAME = "rejections.json"
+
+
+def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
+    """(project, path) pairs a dream-pass apply recorded as REJECTED within the
+    window (apply.record_rejections appends to config.pass_root()/rejections.json).
+
+    Symmetric to recently_applied_paths for the declined side of consolidation-
+    refire suppression: a proposal the operator explicitly turned down
+    should not immediately re-flag and re-propose the very same paths, but the
+    suppression decays after `days` so a stale rejection can never permanently
+    silence a note that keeps rotting. Per-proposal scope: each entry's
+    ``paths`` is that ONE declined proposal's own sources/results
+    (apply.rejected_proposal_entries), never a whole cluster or project --
+    the same path-based identity that lets a renamed or re-clustered note
+    still be recognized without needing any cluster-id bookkeeping.
+
+    Unlike recently_applied_paths (patch-set-manifest mtime windowing),
+    rejections.json is append-only and every entry carries its own
+    ``recorded_at`` ISO timestamp, so windowing here is per-entry rather than
+    per-file.
+    """
+    recently_rejected: set[tuple[str, str]] = set()
+    path = config.pass_root() / REJECTIONS_FILENAME
+    if not path.is_file():
+        return recently_rejected
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return recently_rejected
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return recently_rejected
+    cutoff = dt.date.fromordinal(now.toordinal() - days)
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        recorded_at = entry.get("recorded_at")
+        if not isinstance(recorded_at, str) or len(recorded_at) < 10:
+            continue
+        try:
+            recorded_date = dt.date.fromisoformat(recorded_at[:10])
+        except ValueError:
+            continue
+        if recorded_date < cutoff:
+            continue
+        project = entry.get("project")
+        if not isinstance(project, str):
+            continue
+        for path_value in entry.get("paths") or []:
+            if isinstance(path_value, str):
+                recently_rejected.add((project, path_value))
+    return recently_rejected
+
+
+# --- Repeat-deferral streak tracking -----------------------------------------
+# A small durable file, a SIBLING of rejections.json directly under
+# pass_root() (never inside a dated pass directory), so deleting old pass
+# directories per the retention advisory can never erase deferral history.
+# Tracks the running count of CONSECUTIVE passes each deferred cluster/note
+# has been deferred, so chronic deferral becomes visible instead of silently
+# repeating forever. Updated at most once per DISTINCT newest pass dir (by
+# report.json mtime) -- running triage twice against one build must never
+# inflate a streak.
+DEFERRAL_STREAKS_FILENAME = "deferral-streaks.json"
+
+
+def _deferred_streak_key(entry: dict[str, Any]) -> tuple[str, str, str] | None:
+    """(kind, project, member) identity for one report.json ``deferred``
+    entry, or None for a shape this tracker does not recognize.
+
+    cluster-size-cap entries carry {project, path, reason} (assemble.py:108):
+    keyed on that (project, path) directly, per the plan's instruction.
+
+    per-pass-cap entries written by current builds carry member ``paths``
+    (assemble.py:131-139); when present, the key is the sorted member path
+    set, so a cluster whose membership overlaps across passes keeps its
+    identity even though cluster_id (a hash of the exact member set,
+    assemble.py:41-43, 112) changes. Reports written before ``paths`` was
+    persisted fall back to cluster_id -- for those legacy entries only, a
+    membership change restarts the streak (see
+    tests.test_audit.TriageDeferralStreakTests for both exercised cases).
+    """
+    project = entry.get("project")
+    reason = entry.get("reason")
+    if not isinstance(project, str):
+        return None
+    if reason == "cluster-size-cap" and isinstance(entry.get("path"), str):
+        return "path", project, entry["path"]
+    if reason == "per-pass-cap" and isinstance(entry.get("cluster_id"), str):
+        return "cluster", project, entry["cluster_id"]
+    return None
+
+
+def _newest_pass_report(root: Path) -> tuple[str, dict[str, Any]] | None:
+    """(pass_dir_name, report_json) for the report.json with the newest mtime
+    directly under a dated pass directory in `root`, or None when there is
+    none.
+
+    Keyed on report.json's own mtime rather than parsing the pass directory
+    name as a timestamp, so this tolerates any pass-directory naming scheme
+    -- the same reasoning recently_applied_paths applies to its own manifest
+    windowing.
+    """
+    if not root.is_dir():
+        return None
+    best: tuple[float, str, Path] | None = None
+    for patch_dir in root.iterdir():
+        if not patch_dir.is_dir():
+            continue
+        report_path = patch_dir / "report.json"
+        try:
+            mtime = report_path.stat().st_mtime
+        except OSError:
+            continue
+        if best is None or mtime > best[0]:
+            best = (mtime, patch_dir.name, report_path)
+    if best is None:
+        return None
+    _mtime, pass_id, report_path = best
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return (pass_id, report) if isinstance(report, dict) else None
+
+
+def _load_deferral_streaks() -> dict[str, Any]:
+    path = config.pass_root() / DEFERRAL_STREAKS_FILENAME
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("streaks"), list):
+                return data
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {"schema_version": 1, "last_pass_id": None, "streaks": []}
+
+
+def update_deferral_streaks() -> list[dict[str, Any]]:
+    """Advance deferral-streaks.json against the newest pass dir's
+    report.json and return its current streak records.
+
+    The streak count is pass-indexed, not date-indexed (a pass is "the
+    newest report.json under pass_root()"), so there is no `now` to inject.
+
+    Idempotent per pass: a pass_id already recorded as ``last_pass_id`` is
+    NOT re-counted, so repeated triage runs against one build never inflate
+    a streak. A key present in the newest pass's ``deferred`` list has its
+    count incremented (or starts at 1); any key that was tracked but is
+    absent from the newest pass resets -- its record is dropped, matching
+    "consecutive passes deferred" semantics.
+    """
+    data = _load_deferral_streaks()
+    newest = _newest_pass_report(config.pass_root())
+    if newest is None:
+        return data["streaks"]
+    pass_id, report = newest
+    if pass_id == data.get("last_pass_id"):
+        return data["streaks"]
+    deferred = report.get("deferred")
+    deferred = deferred if isinstance(deferred, list) else []
+    current: dict[tuple[str, str, str], dict[str, Any]] = {}
+    cluster_entries: list[dict[str, Any]] = []
+    for entry in deferred:
+        if not isinstance(entry, dict):
+            continue
+        paths = entry.get("paths")
+        if (
+            entry.get("reason") == "per-pass-cap"
+            and isinstance(entry.get("project"), str)
+            and isinstance(entry.get("cluster_id"), str)
+            and isinstance(paths, list)
+            and paths
+            and all(isinstance(p, str) for p in paths)
+        ):
+            cluster_entries.append(entry)
+            continue
+        key = _deferred_streak_key(entry)
+        if key is not None and key not in current:
+            current[key] = entry
+    prior_counts: dict[tuple[str, str, str], int] = {}
+    prior_cluster_sets: list[dict[str, Any]] = []
+    for record in data["streaks"]:
+        if not isinstance(record, dict):
+            continue
+        prior_paths = record.get("paths")
+        if (
+            record.get("kind") == "cluster"
+            and isinstance(prior_paths, list)
+            and prior_paths
+            and all(isinstance(p, str) for p in prior_paths)
+        ):
+            prior_cluster_sets.append(
+                {"project": record.get("project"), "paths": frozenset(prior_paths), "count": record.get("count", 0), "consumed": False}
+            )
+            continue
+        member = record.get("path") if record.get("kind") == "path" else record.get("cluster_id")
+        prior_counts[(record.get("kind"), record.get("project"), member)] = record.get("count", 0)
+    streaks: list[dict[str, Any]] = []
+    for key, entry in current.items():
+        kind, project, member = key
+        record = {"kind": kind, "project": project, "reason": entry.get("reason"), "count": prior_counts.get(key, 0) + 1}
+        record["path" if kind == "path" else "cluster_id"] = member
+        streaks.append(record)
+    # Per-pass-cap entries carrying member paths continue a prior streak by
+    # path-set OVERLAP, not exact-set equality, so a cluster that gains or
+    # loses a member keeps its streak identity. Deferred clusters within one
+    # pass are disjoint (union-find partitions), so greedy max-overlap
+    # matching is unambiguous; each prior record continues at most one
+    # current entry.
+    for entry in cluster_entries:
+        project = entry["project"]
+        member_set = frozenset(entry["paths"])
+        best = None
+        best_overlap = 0
+        for prior in prior_cluster_sets:
+            if prior["consumed"] or prior["project"] != project:
+                continue
+            overlap = len(member_set & prior["paths"])
+            if overlap > best_overlap:
+                best, best_overlap = prior, overlap
+        if best is not None:
+            best["consumed"] = True
+            count = best["count"] + 1
+        else:
+            count = prior_counts.get(("cluster", project, entry["cluster_id"]), 0) + 1
+        streaks.append(
+            {
+                "kind": "cluster",
+                "project": project,
+                "reason": entry.get("reason"),
+                "count": count,
+                "cluster_id": entry["cluster_id"],
+                "paths": sorted(member_set),
+            }
+        )
+    streaks.sort(key=lambda r: (r["kind"], r["project"], r.get("path") or r.get("cluster_id") or ""))
+    root = config.pass_root()
+    root.mkdir(parents=True, exist_ok=True)
+    compat.restrict_permissions(root)
+    (root / DEFERRAL_STREAKS_FILENAME).write_text(
+        json.dumps({"schema_version": 1, "last_pass_id": pass_id, "streaks": streaks}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+    return streaks
+
+
 def run_triage(args: argparse.Namespace) -> int:
     live_root = Path(args.live_root).expanduser()
     mirror_root = Path(args.mirror_root).expanduser() if args.mirror_root else None
@@ -803,7 +1054,34 @@ def run_triage(args: argparse.Namespace) -> int:
                 by_project[record["project"]] = by_project.get(record["project"], 1) - 1
                 if by_project.get(record["project"], 0) <= 0:
                     by_project.pop(record["project"], None)
+    # Rejection suppression: symmetric to the applied-side block above,
+    # reading rejections.json instead of applied patch-set manifests. Runs
+    # AFTER the applied-side filter and only against what survived it, so a
+    # path that is somehow both recently applied and recently rejected is
+    # suppressed exactly once -- counted under suppressed_recently_applied,
+    # never double-counted here.
+    suppressed_rejected: list[dict[str, Any]] = []
+    rejected_days = getattr(args, "suppress_rejected_days", config.SUPPRESS_REJECTED_DAYS)
+    if rejected_days > 0:
+        recently_rejected = recently_rejected_paths(rejected_days, now)
+        if recently_rejected:
+            kept = []
+            for record in all_flagged:
+                if (record["project"], record["path"]) in recently_rejected:
+                    suppressed_rejected.append(record)
+                else:
+                    kept.append(record)
+            all_flagged = kept
+            for record in suppressed_rejected:
+                by_project[record["project"]] = by_project.get(record["project"], 1) - 1
+                if by_project.get(record["project"], 0) <= 0:
+                    by_project.pop(record["project"], None)
     all_flagged.sort(key=lambda record: (-record["score"], record["project"], record["path"]))
+    # Repeat-deferral visibility: advance the durable streak file from
+    # the newest pass dir's report.json (a no-op when there is no pass dir,
+    # or when this pass was already counted).
+    repeat_deferral = [record for record in update_deferral_streaks() if record["count"] >= 2]
+    repeat_deferral.sort(key=lambda r: (-r["count"], r["project"], r.get("path") or r.get("cluster_id") or ""))
     result = {
         "schema_version": 1,
         "command": "triage",
@@ -814,11 +1092,14 @@ def run_triage(args: argparse.Namespace) -> int:
             "notes_scored": notes_scored,
             "flagged": len(all_flagged),
             "suppressed_recently_applied": len(suppressed),
+            "suppressed_recently_rejected": len(suppressed_rejected),
             "by_project": dict(sorted(by_project.items())),
             "index_over_budget": dict(sorted(index_over_budget.items())),
         },
         "flagged": all_flagged,
         "suppressed": suppressed,
+        "suppressed_rejected": suppressed_rejected,
+        "repeat_deferral": repeat_deferral,
     }
     if args.format == "json":
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
@@ -850,6 +1131,15 @@ def render_triage_human(result: dict[str, Any]) -> str:
             f"WARN {project}: MEMORY.md at {size['lines']}/{config.INDEX_LOAD_MAX_LINES} lines, "
             f"{size['bytes']}/{config.INDEX_LOAD_MAX_BYTES} bytes "
             f"(>= {config.INDEX_BUDGET_FRACTION:.0%} of the session load cap)"
+        )
+    # Repeat-deferral visibility: keys deferred >=2 consecutive passes,
+    # inserted BEFORE the trailing flagged:N line so that line's contract
+    # (last line of output) is untouched.
+    for record in result.get("repeat_deferral", []):
+        key = record.get("path") or f"cluster {record.get('cluster_id')}"
+        lines.append(
+            f"  repeat-deferral {record['project']}/{key} ({record['reason']}): "
+            f"{record['count']} consecutive passes"
         )
     lines.append(f"flagged:{summary['flagged']}")
     return "\n".join(lines)
@@ -1518,6 +1808,12 @@ def _add_triage_parser(subparsers) -> None:
         type=int,
         default=config.SUPPRESS_APPLIED_DAYS,
         help="drop flags on notes an applied dream pass touched within N days (0 disables)",
+    )
+    parser.add_argument(
+        "--suppress-rejected-days",
+        type=int,
+        default=config.SUPPRESS_REJECTED_DAYS,
+        help="drop flags on paths a recently REJECTED proposal covered, within N days (0 disables)",
     )
     parser.set_defaults(func=run_triage)
 

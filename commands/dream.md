@@ -77,7 +77,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" triage --format json
 ```
 
 Zero flagged notes → report "memory is clean, no pass needed" and stop.
-Otherwise continue. If `$ARGUMENTS` names a project, filter to it.
+Otherwise continue. If `$ARGUMENTS` names a project, filter to it. If the
+`repeat_deferral` field (or its human-format lines) names any cluster or
+note, tell the operator it has been deferred for multiple consecutive
+passes in a row, not just this one.
 
 ### 2. Plan the clusters (deterministic, LLM-free)
 
