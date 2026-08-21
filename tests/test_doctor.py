@@ -265,7 +265,17 @@ class DoctorCompactionCanaryLineTests(unittest.TestCase):
 # =============================================================================
 
 
-def _write_executable(path: Path, script: str) -> Path:
+def _write_executable(path: Path, script: str, windows_script: str) -> Path:
+    """Write a runnable stub for the version probe. POSIX gets `script` as a
+    shebang shell file at `path`; Windows gets `windows_script` as
+    `path.with_suffix(".bat")` because CreateProcess cannot execute shebang
+    text files (WinError 193). Callers keep passing the extensionless `path`
+    to the probe -- shutil.which resolves the .bat twin via PATHEXT, the same
+    way a real `claude.cmd` install resolves."""
+    if os.name == "nt":
+        bat = path.with_suffix(".bat")
+        bat.write_text(windows_script, encoding="utf-8", newline="\r\n")
+        return path
     path.write_text(script, encoding="utf-8", newline="\n")
     path.chmod(0o755)
     return path
@@ -280,7 +290,11 @@ class InstalledVersionProbeTests(unittest.TestCase):
         # to prove this parses whatever the binary prints rather than
         # coincidentally matching the record.
         with tempfile.TemporaryDirectory() as temp:
-            stub = _write_executable(Path(temp) / "claude", "#!/bin/sh\necho '9.8.7 (Claude Code)'\nexit 0\n")
+            stub = _write_executable(
+                Path(temp) / "claude",
+                "#!/bin/sh\necho '9.8.7 (Claude Code)'\nexit 0\n",
+                "@echo 9.8.7 (Claude Code)\n@exit /b 0\n",
+            )
             self.assertEqual(cli._detect_installed_claude_version(binary=str(stub)), "9.8.7")
 
     def test_absent_binary_returns_none(self):
@@ -288,17 +302,29 @@ class InstalledVersionProbeTests(unittest.TestCase):
 
     def test_nonzero_exit_returns_none(self):
         with tempfile.TemporaryDirectory() as temp:
-            stub = _write_executable(Path(temp) / "claude", "#!/bin/sh\necho 'boom' >&2\nexit 1\n")
+            stub = _write_executable(
+                Path(temp) / "claude",
+                "#!/bin/sh\necho 'boom' >&2\nexit 1\n",
+                "@echo boom 1>&2\n@exit /b 1\n",
+            )
             self.assertIsNone(cli._detect_installed_claude_version(binary=str(stub)))
 
     def test_garbage_output_returns_none(self):
         with tempfile.TemporaryDirectory() as temp:
-            stub = _write_executable(Path(temp) / "claude", "#!/bin/sh\necho 'banana'\nexit 0\n")
+            stub = _write_executable(
+                Path(temp) / "claude",
+                "#!/bin/sh\necho 'banana'\nexit 0\n",
+                "@echo banana\n@exit /b 0\n",
+            )
             self.assertIsNone(cli._detect_installed_claude_version(binary=str(stub)))
 
     def test_hang_past_timeout_returns_none_promptly(self):
         with tempfile.TemporaryDirectory() as temp:
-            stub = _write_executable(Path(temp) / "claude", "#!/bin/sh\nsleep 30\necho '9.8.7'\n")
+            stub = _write_executable(
+                Path(temp) / "claude",
+                "#!/bin/sh\nsleep 30\necho '9.8.7'\n",
+                "@ping -n 31 127.0.0.1 > nul\n@echo 9.8.7\n",
+            )
             started = time.monotonic()
             result = cli._detect_installed_claude_version(binary=str(stub), timeout=0.3)
             elapsed = time.monotonic() - started
