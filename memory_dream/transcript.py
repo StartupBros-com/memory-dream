@@ -229,8 +229,11 @@ def compaction_canary(transcripts_dir: Path, sample_files: int = _CANARY_SAMPLE_
             outcome = _classify_canary_turn(entry)
             if outcome == "drift" and drift_in is None:
                 drift_in = path.name
+                break  # drift outranks every later observation; stop scanning
             elif outcome == "verified" and verified_in is None:
                 verified_in = path.name
+        if drift_in is not None:
+            break
 
     if drift_in is not None:
         return (

@@ -49,9 +49,11 @@ COMPATIBILITY_RECORD: dict[str, object] = {
 # --- Index budget (the loader-visible MEMORY.md surface) -------------------
 # Cap values measured against COMPATIBILITY_RECORD's Claude Code version; the
 # cap is not a documented API and can drift with the CLI. `doctor` compares
-# the installed CLI version against the record and reports drift.
-INDEX_LOAD_MAX_LINES = 200
-INDEX_LOAD_MAX_BYTES = 25 * 1024
+# the installed CLI version against the record and reports drift. Derived
+# from the record so the measured values cannot drift from their provenance;
+# both stay independently overridable globals.
+INDEX_LOAD_MAX_LINES = COMPATIBILITY_RECORD["index_load_max_lines"]
+INDEX_LOAD_MAX_BYTES = COMPATIBILITY_RECORD["index_load_max_bytes"]
 INDEX_BUDGET_FRACTION = 0.7  # repository-hygiene warning threshold
 # Repo-hygiene audit ceilings (distinct from the loader cap above).
 AUDIT_MAX_INDEX_BYTES = 32768
