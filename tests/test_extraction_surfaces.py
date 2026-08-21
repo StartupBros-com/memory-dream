@@ -1189,6 +1189,206 @@ class DoctorPreviewCopyLineTests(unittest.TestCase):
 
 
 # =============================================================================
+# 11a. doctor aggregate drift line, --strict, and the readiness line (U5)
+# =============================================================================
+
+
+def _ambient_preview_copy_label() -> str | None:
+    """None if this host's real "preview copy" check is currently clean;
+    otherwise "preview copy" -- the label doctor would add to its drift
+    line. A leftover memory-dream-preview.html under a real /mnt/c/Users
+    is host state, not something a fixture controls, so aggregate-line
+    assertions below build their expected string through this rather than
+    assuming a clean host on every machine that runs this suite."""
+    _label, ok, _detail, _fatal = cli._preview_copy_retention_check(cli._wsl_windows_homes())
+    return None if ok else "preview copy"
+
+
+def _expected_drift_line(*forced_labels: str) -> str:
+    """The doctor "drift: ..." line a fixture forcing `forced_labels`
+    should produce, in the same order `_run_doctor` appends checks,
+    folding in this host's ambient "preview copy" state (see
+    `_ambient_preview_copy_label`)."""
+    order = ["compaction canary", "staging leftovers", "patch-set retention", "preview copy", "index cap"]
+    ambient = _ambient_preview_copy_label()
+    present = set(forced_labels) | ({ambient} if ambient else set())
+    labels = [label for label in order if label in present]
+    if not labels:
+        return "drift: none"
+    return f"drift: {len(labels)} ({', '.join(labels)})"
+
+
+class DoctorAggregateAndStrictTests(unittest.TestCase):
+    """`doctor`'s trailing "drift: ..." aggregate line (always the last
+    line of output) and the `--strict` flag. Drift is recorded only for
+    advisories that reported a concrete, unexpected finding: "unverifiable"
+    (index cap with no `claude` on PATH), "no sample" (compaction canary
+    with no transcripts), and "nothing found because a precondition is
+    absent" (consent trace on a fresh checkout -- explicitly documented as
+    not drift) never count, and neither does a deliberate config override
+    (always ok=True already). The default (flag-less) exit code
+    never changes because of drift; only `--strict` recomputes it from the
+    recorded drift advisories."""
+
+    def _healthy_env(self, temp: Path) -> dict:
+        claude_dir = Path(temp) / "claude-config"
+        projects = claude_dir / "projects"
+        (projects / "some-project" / "memory").mkdir(parents=True)
+        transcripts_dir = projects / transcript.cwd_slug(REPO_ROOT)
+        transcripts_dir.mkdir(parents=True)
+        (transcripts_dir / "session.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}}) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        env = subprocess_env(claude_dir)
+        # Scope PATH so a real `claude` binary on the host running this suite
+        # (whose version may not match config.COMPATIBILITY_RECORD) can never
+        # nondeterministically add "index cap" to these fixtures' drift line --
+        # same technique as the pinned
+        # test_index_cap_line_unverifiable_when_claude_absent_from_path.
+        empty_path_dir = Path(temp) / "empty-path"
+        empty_path_dir.mkdir(exist_ok=True)
+        env["PATH"] = str(empty_path_dir)
+        return env
+
+    def test_drift_none_on_healthy_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env = self._healthy_env(Path(temp))
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            lines = result.stdout.rstrip().splitlines()
+            self.assertEqual(lines[-1], _expected_drift_line())
+
+    def test_strict_exits_zero_when_nothing_drifted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env = self._healthy_env(Path(temp))
+            result = run_cli("doctor", "--strict", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_stale_patch_set_is_drift_but_default_exit_stays_zero(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env = self._healthy_env(Path(temp))
+            claude_dir = Path(env["CLAUDE_CONFIG_DIR"])
+            pass_root = claude_dir / "logs" / "memory-dream" / "passes"
+            old = pass_root / "2026-01-01-ps"
+            old.mkdir(parents=True)
+            (old / "preview.html").write_text("stale content", encoding="utf-8")
+            old_time = time.time() - 95 * 86400
+            os.utime(old, (old_time, old_time))
+
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # drift never touches the default exit
+            lines = result.stdout.rstrip().splitlines()
+            self.assertEqual(lines[-1], _expected_drift_line("patch-set retention"))
+
+    def test_strict_exits_nonzero_when_something_drifted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env = self._healthy_env(Path(temp))
+            claude_dir = Path(env["CLAUDE_CONFIG_DIR"])
+            pass_root = claude_dir / "logs" / "memory-dream" / "passes"
+            old = pass_root / "2026-01-01-ps"
+            old.mkdir(parents=True)
+            (old / "preview.html").write_text("stale content", encoding="utf-8")
+            old_time = time.time() - 95 * 86400
+            os.utime(old, (old_time, old_time))
+
+            result = run_cli("doctor", "--strict", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_unverifiable_index_cap_is_not_drift_even_with_strict(self):
+        with tempfile.TemporaryDirectory() as temp:
+            # _healthy_env already scopes PATH to an empty dir, so `claude`
+            # is never found here and "index cap" is unconditionally
+            # "unverifiable" -- exactly the case under test.
+            env = self._healthy_env(Path(temp))
+            result = run_cli("doctor", "--strict", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("unverifiable", _doctor_line(result.stdout, "index cap").lower())
+            lines = result.stdout.rstrip().splitlines()
+            self.assertEqual(lines[-1], _expected_drift_line())
+
+    def test_missing_consent_trace_is_not_drift_even_with_strict(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            (claude_dir / "projects" / "some-project" / "memory").mkdir(parents=True)
+            # deliberately no transcripts dir for this cwd -- a fresh checkout
+            env = subprocess_env(claude_dir)
+            empty_path_dir = Path(temp) / "empty-path"  # see _healthy_env: scope out a real `claude` on PATH
+            empty_path_dir.mkdir()
+            env["PATH"] = str(empty_path_dir)
+            result = run_cli("doctor", "--strict", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(_doctor_line(result.stdout, "consent trace").startswith("warn"))
+            lines = result.stdout.rstrip().splitlines()
+            self.assertEqual(lines[-1], _expected_drift_line())
+
+    def test_config_override_is_not_drift_even_with_strict(self):
+        with tempfile.TemporaryDirectory() as temp:
+            env = self._healthy_env(Path(temp))
+            env["MEMORY_DREAM_MERGE_JACCARD"] = "0.9"
+            result = run_cli("doctor", "--strict", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("MERGE_JACCARD", _doctor_line(result.stdout, "config overrides"))
+            lines = result.stdout.rstrip().splitlines()
+            self.assertEqual(lines[-1], _expected_drift_line())
+
+
+class DoctorReadinessLineTests(unittest.TestCase):
+    """`doctor`'s "readiness" advisory line: calls `audit.compute_triage`
+    in-process (both suppression windows apply) and surfaces the flagged
+    count without shelling out to `memory-dream triage`. Reports
+    "unavailable" -- never drift -- when there is nothing to score
+    (missing or empty live root); always advisory (never affects doctor's
+    exit code)."""
+
+    def test_unavailable_when_live_root_missing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            claude_dir.mkdir()  # deliberately no "projects" subdirectory
+            env = subprocess_env(claude_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 1)  # live root hard failure, unaffected by readiness
+            line = _doctor_line(result.stdout, "readiness")
+            self.assertTrue(line.startswith("ok"), line)
+            self.assertIn("unavailable", line)
+
+    def test_unavailable_when_live_root_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            (claude_dir / "projects").mkdir(parents=True)  # exists, holds zero projects
+            env = subprocess_env(claude_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "readiness")
+            self.assertTrue(line.startswith("ok"), line)
+            self.assertIn("unavailable", line)
+
+    def test_flagged_count_matches_triage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            live_root = claude_dir / "projects"
+            memory_dir = live_root / "proj" / "memory"
+            memory_dir.mkdir(parents=True)
+            (memory_dir / "MEMORY.md").write_text("- [Log](log.md)\n", encoding="utf-8", newline="\n")
+            (memory_dir / "log.md").write_text(note("log", body="z" * 6500), encoding="utf-8", newline="\n")
+            env = subprocess_env(claude_dir)
+
+            triage_result = run_cli(
+                "triage", "--live-root", str(live_root), "--format", "json", cwd=REPO_ROOT, env=env,
+            )
+            self.assertEqual(triage_result.returncode, 0, triage_result.stdout + triage_result.stderr)
+            triage_summary = json.loads(triage_result.stdout)["summary"]
+            self.assertGreater(triage_summary["flagged"], 0)  # fixture must actually flag something
+
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "readiness")
+            self.assertTrue(line.startswith("ok"), line)
+            self.assertIn(f"{triage_summary['flagged']} note(s) flagged", line)
+            self.assertIn(f"{triage_summary['live_projects']} project(s)", line)
+
+
+# =============================================================================
 # 12. compatibility record single-source guard
 # =============================================================================
 

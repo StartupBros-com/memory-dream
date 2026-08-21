@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 if __package__ in (None, ""):  # run as a file (the plugin invocation path)
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -47,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_doctor_parser(subparsers) -> None:
     p = subparsers.add_parser("doctor", help="preflight: report what works and what degrades here")
     config.add_root_args(p)
+    p.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit nonzero if any drift advisory fired (default flag-less exit is unaffected)",
+    )
     p.set_defaults(func=_run_doctor)
 
 
@@ -153,6 +159,29 @@ def _config_overrides_check(overrides: dict[str, tuple[object, object, str]]) ->
     return ("config overrides", True, "; ".join(parts), False)
 
 
+def _readiness_check(triage_summary: dict[str, Any] | None) -> tuple[str, bool, str, bool]:
+    """Build the doctor "readiness" (label, ok, detail, fatal) tuple.
+
+    `triage_summary` is the ``summary`` dict from an already-computed
+    `audit.compute_triage(...)` result -- passed in rather than computed
+    here so the reporting is directly unit-testable. `None`, or a summary
+    with zero live projects, both mean "nothing to score" (a missing live
+    root and an empty one are indistinguishable from the operator's point
+    of view here), reported as "unavailable". Always advisory (fatal=False)
+    and always ok=True: the flagged count is informational -- `memory-dream
+    triage` is where an operator acts on it, never doctor.
+    """
+    if triage_summary is None or triage_summary["live_projects"] == 0:
+        return ("readiness", True, "unavailable — no live projects to score", False)
+    return (
+        "readiness",
+        True,
+        f"{triage_summary['flagged']} note(s) flagged for consolidation across "
+        f"{triage_summary['live_projects']} project(s) (see `memory-dream triage`)",
+        False,
+    )
+
+
 def _stale_patch_sets(root: Path, retention_days: int) -> list[Path]:
     """Patch-set directories directly under `root` whose mtime is older
     than `retention_days`. Read-only: nothing here deletes or touches a
@@ -250,11 +279,12 @@ def _preview_copy_retention_check(homes: list[Path]) -> tuple[str, bool, str, bo
 
 
 def _run_doctor(args) -> int:
+    import datetime as dt
     import importlib.util
     import os
     import shutil
 
-    from memory_dream import transcript
+    from memory_dream import audit, transcript
 
     # (label, ok, detail, fatal). Only a fatal failure exits non-zero: the tool
     # cannot run at all (wrong Python, no writable scratch, broken lock backend,
@@ -324,6 +354,17 @@ def _run_doctor(args) -> int:
 
     checks.append(_config_overrides_check(config.non_default_values()))
 
+    # Readiness: the deterministic triage flagged-count, computed in-process
+    # (both suppression windows apply) via the same live-root/mirror-root
+    # resolution `config.add_root_args` already gave this subcommand.
+    # `compute_triage` degrades to zero live projects on its own for a
+    # missing or empty live root, so it is always safe to call here.
+    mirror_root = Path(args.mirror_root).expanduser() if args.mirror_root else None
+    triage_result = audit.compute_triage(
+        live, mirror_root, dt.date.today(), config.SUPPRESS_APPLIED_DAYS, config.SUPPRESS_REJECTED_DAYS
+    )
+    checks.append(_readiness_check(triage_result["summary"]))
+
     hard_failures = [c for c in checks if not c[1] and c[3]]
     advisories = [c for c in checks if not c[1] and not c[3]]
     for label, ok, detail, fatal in checks:
@@ -336,7 +377,30 @@ def _run_doctor(args) -> int:
     if hard_failures:
         summary += f", {len(hard_failures)} FAIL"
     print(summary)
-    return 1 if hard_failures else 0
+
+    # Drift: an advisory that reported a concrete, unexpected finding (an
+    # installed-version mismatch, a compaction-canary trip, stale/leftover
+    # files) -- never a hard failure (those already drive the default exit
+    # code below, independent of --strict) and never "consent trace" on its
+    # own: that check's only False state is "no transcripts directory for
+    # this cwd" -- a fresh checkout or a read-only stage that never needed
+    # one -- which is exactly the "missing transcripts, fresh checkout"
+    # case this unit's spec calls out as NOT drift. Every other advisory
+    # here (readiness, config overrides, git/gh, snapshot mode, an
+    # "unverifiable"/"unverified" index-cap or compaction-canary probe)
+    # already reports ok=True in its own False-vs-True convention, so no
+    # further exclusion is needed to keep them out of this list.
+    NON_DRIFT_ADVISORY_LABELS = {"consent trace"}
+    drift = [
+        label for label, ok, _detail, fatal in checks
+        if not ok and not fatal and label not in NON_DRIFT_ADVISORY_LABELS
+    ]
+    if drift:
+        print(f"drift: {len(drift)} ({', '.join(drift)})")
+    else:
+        print("drift: none")
+
+    return 1 if hard_failures or (args.strict and drift) else 0
 
 
 def _run_open_preview(args) -> int:

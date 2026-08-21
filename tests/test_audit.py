@@ -398,6 +398,50 @@ class MemoryTriageTests(unittest.TestCase):
                 self.assertIn(field, record)
 
 
+class ComputeTriageParityTests(unittest.TestCase):
+    """`audit.compute_triage` is the extracted, in-process-callable core of
+    `run_triage` (doctor's readiness check calls it directly, without
+    shelling out). This pins that the extraction changed nothing observable:
+    a direct call with the same roots/now/suppression-days must return
+    exactly the dict the CLI's --format json path prints."""
+
+    run_triage = MemoryTriageTests.run_triage
+
+    def test_direct_call_matches_cli_json_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Fixture(Path(temp))
+            live, _ = fixture.project(mirror=False)
+            (live / "MEMORY.md").write_text("- [L](log.md)\n", encoding="utf-8", newline="\n")
+            (live / "log.md").write_text(note("log", body="z" * 6500), encoding="utf-8", newline="\n")
+            cli_result = self.run_triage(fixture, "--now", "2026-07-17")
+            self.assertEqual(cli_result.returncode, 0)
+            cli_payload = json.loads(cli_result.stdout)
+
+            # compute_triage reads config.pass_root() (via update_deferral_streaks)
+            # through the live CLAUDE_CONFIG_DIR global, same as the subprocess
+            # call above resolved it through its own isolated env -- so the
+            # in-process call needs the same CLAUDE_CONFIG_DIR to be a fair
+            # comparison. Restored in finally so this test never leaks state
+            # into whatever ran before or after it in the same process.
+            original_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+            os.environ["CLAUDE_CONFIG_DIR"] = str(fixture.claude_config_dir)
+            try:
+                direct = audit.compute_triage(
+                    fixture.live,
+                    fixture.mirror,
+                    dt.date(2026, 7, 17),
+                    config.SUPPRESS_APPLIED_DAYS,
+                    config.SUPPRESS_REJECTED_DAYS,
+                )
+            finally:
+                if original_config_dir is None:
+                    os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                else:
+                    os.environ["CLAUDE_CONFIG_DIR"] = original_config_dir
+
+            self.assertEqual(direct, cli_payload)
+
+
 class MemoryFixTests(unittest.TestCase):
     def run_fix(self, fixture, *args):
         command = [

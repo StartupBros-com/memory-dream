@@ -1002,13 +1002,24 @@ def update_deferral_streaks() -> list[dict[str, Any]]:
     return streaks
 
 
-def run_triage(args: argparse.Namespace) -> int:
-    live_root = Path(args.live_root).expanduser()
-    mirror_root = Path(args.mirror_root).expanduser() if args.mirror_root else None
-    if not live_root.is_dir():
-        print(f"memory-triage: live root is not a directory: {live_root}", file=sys.stderr)
-        return 2
-    now = args.now or dt.date.today()
+def compute_triage(
+    live_root: Path,
+    mirror_root: Path | None,
+    now: dt.date,
+    suppress_applied_days: int,
+    suppress_rejected_days: int,
+) -> dict[str, Any]:
+    """Score every live project's notes and return the full triage result
+    dict -- the same shape `run_triage` prints under ``--format json``.
+    Pure computation: no argparse.Namespace, no printing, no exit code, so
+    it is directly callable in-process (doctor's readiness check calls
+    this instead of shelling out to `memory-dream triage`).
+
+    `live_root` is NOT validated here (unlike `run_triage`'s CLI "not a
+    directory" exit-2 contract) -- `project_dirs` already degrades to {}
+    for a missing or empty root, so a caller that can tolerate "nothing to
+    score" may pass one straight through.
+    """
     live = project_dirs(live_root, live=True)
     all_flagged: list[dict[str, Any]] = []
     notes_scored = 0
@@ -1039,9 +1050,8 @@ def run_triage(args: argparse.Namespace) -> int:
     # same day they were applied). Suppressed entries are reported, not silently
     # dropped.
     suppressed: list[dict[str, Any]] = []
-    days = getattr(args, "suppress_applied_days", config.SUPPRESS_APPLIED_DAYS)
-    if days > 0:
-        recently_applied = recently_applied_paths(days, now)
+    if suppress_applied_days > 0:
+        recently_applied = recently_applied_paths(suppress_applied_days, now)
         if recently_applied:
             kept = []
             for record in all_flagged:
@@ -1061,9 +1071,8 @@ def run_triage(args: argparse.Namespace) -> int:
     # suppressed exactly once -- counted under suppressed_recently_applied,
     # never double-counted here.
     suppressed_rejected: list[dict[str, Any]] = []
-    rejected_days = getattr(args, "suppress_rejected_days", config.SUPPRESS_REJECTED_DAYS)
-    if rejected_days > 0:
-        recently_rejected = recently_rejected_paths(rejected_days, now)
+    if suppress_rejected_days > 0:
+        recently_rejected = recently_rejected_paths(suppress_rejected_days, now)
         if recently_rejected:
             kept = []
             for record in all_flagged:
@@ -1082,7 +1091,7 @@ def run_triage(args: argparse.Namespace) -> int:
     # or when this pass was already counted).
     repeat_deferral = [record for record in update_deferral_streaks() if record["count"] >= 2]
     repeat_deferral.sort(key=lambda r: (-r["count"], r["project"], r.get("path") or r.get("cluster_id") or ""))
-    result = {
+    return {
         "schema_version": 1,
         "command": "triage",
         "roots": {"live": str(live_root), "mirror": str(mirror_root) if mirror_root is not None else None},
@@ -1101,6 +1110,22 @@ def run_triage(args: argparse.Namespace) -> int:
         "suppressed_rejected": suppressed_rejected,
         "repeat_deferral": repeat_deferral,
     }
+
+
+def run_triage(args: argparse.Namespace) -> int:
+    live_root = Path(args.live_root).expanduser()
+    mirror_root = Path(args.mirror_root).expanduser() if args.mirror_root else None
+    if not live_root.is_dir():
+        print(f"memory-triage: live root is not a directory: {live_root}", file=sys.stderr)
+        return 2
+    now = args.now or dt.date.today()
+    result = compute_triage(
+        live_root,
+        mirror_root,
+        now,
+        getattr(args, "suppress_applied_days", config.SUPPRESS_APPLIED_DAYS),
+        getattr(args, "suppress_rejected_days", config.SUPPRESS_REJECTED_DAYS),
+    )
     if args.format == "json":
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     else:
