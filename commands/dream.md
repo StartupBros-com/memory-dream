@@ -268,14 +268,57 @@ merge states, file paths), against the project's repo history when one
 exists locally: an artifact claim contradicted by `git log`/`gh pr view` is
 `distorted`.
 
-Disposition, before build: fix every `high` and `med` finding in the draft
-(correct the line or delete it; never keep a known-false line because it
-is small), apply `low` fixes when cheap, and re-verify any proposal whose
-fixes were substantial. Any correction that deliberately diverges from the
-sources (repo evidence overruling a source note) MUST carry its evidence
-inline (PR number, commit, doc path, or check date), or a later verifier
-will correctly flag it as unsupported. A proposal that cannot be made
-truthful is dropped. Only fidelity-clean drafts proceed to build.
+**Shared finding schema (stages 3.5, 3.7, 3.8) and the quote-existence
+gate.** Every finding-producing stage from here through the quality panel
+returns the same per-finding shape: the fidelity schema at
+`templates/fidelity-prompt.md` — `{"path": "...", "findings": [{"severity":
+"high|med|low", "claim": "...", "problem": "...", "fix": "...", "quote":
+"..."}]}` — extended with `quote`, a short span copied verbatim from the
+file the finding cites at `path`. Stages 3.7 and 3.8 have no separate
+prompt template; state this exact schema, `quote` field included, inline in
+each of their subagent dispatches. Collect a stage's per-file JSON objects
+into one file, `{"files": [ <each object> ]}`, then run the advisory
+quote-existence gate on it before acting on any finding (measured
+2026-07-20 during the authors' consolidation campaign: two findings from
+one pass quoted text not present in any file, and nothing but a human
+re-read caught it):
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" verify-findings \
+  --findings "<stage's collected findings file>" \
+  --root "<base every finding's path is confined against>"
+```
+
+This always exits 0 (advisory) and rewrites the findings file in place,
+stamping every finding it reaches `quote_checked: true` (the substring
+check, normalized the same way `recall_eval`'s snippet check is, confirmed
+the quote) or `quote_checked: false` plus `unverified_quote: true` (missing
+or empty `quote`, a `path` that fails confinement or does not resolve to an
+existing file, or a quote the check could not find). A finding a stage
+never ran the gate on carries neither key, so "checked and unverifiable"
+stays distinguishable from "never checked." **Stage 3.6 is exempt:**
+repo-grounding findings verify against `git`/`gh` command output, not file
+text, so a file-substring check is a category error there and this gate is
+never run on that stage's output.
+
+Disposition, before build: collect each proposed file's fidelity-verifier
+object into that cluster's findings file
+(`$SCRATCH/dream-fidelity-<cluster_id>.json`) and run the gate above
+against it, with `--root` set to that cluster's live project memory
+directory (`plan.json`'s `clusters[].project` under the live root;
+`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<project>/memory` by
+default). Then fix every `high` and `med` finding in the draft (correct
+the line or delete it; never keep a known-false line because it is small),
+apply `low` fixes when cheap, and re-verify any proposal whose fixes were
+substantial. Treat any finding stamped `unverified_quote` (or carrying no
+`quote_checked` stamp at all) as unverifiable rather than acting on its
+quote at face value — confirm it against the source directly before fixing
+on its authority, and never drop it silently. Any correction that
+deliberately diverges from the sources (repo evidence overruling a source
+note) MUST carry its evidence inline (PR number, commit, doc path, or check
+date), or a later verifier will correctly flag it as unsupported. A
+proposal that cannot be made truthful is dropped. Only fidelity-clean
+drafts proceed to build.
 
 ### 3.6 Repo-grounding for task-state survivors (MANDATORY)
 
@@ -326,6 +369,22 @@ provenance gaps across 23 edits):
 - Routing measurement cannot see body-level splice defects; only this round
   can.
 
+Each checker-check subagent returns the shared finding schema (Stage 3.5)
+with `quote` populated verbatim from the result file it is re-verifying.
+Collect its per-file objects into `$SCRATCH/dream-checker-findings.json`
+and run the quote-existence gate against the built results before acting on
+any finding:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" verify-findings \
+  --findings "$SCRATCH/dream-checker-findings.json" \
+  --root "$PS/results"
+```
+
+Treat any finding stamped `unverified_quote` (or carrying no `quote_checked`
+stamp at all) as unverifiable, never as grounds to apply or silently drop a
+fix.
+
 **Correction-weaving style (measured 2026-07-20 during the authors'
 consolidation campaign):** a woven correction states the current fact plus
 its citation, never the edit history. Ban phrases of the class "not X as
@@ -350,12 +409,27 @@ sonnet`): (1) reader-value/noise (edit-history narration, stacked
 provenance), (2) durability (undated present-tense claims, ownerless open
 items), (3) routing surfaces (description vs body staleness, name/stem
 mismatches, byte-budget), (4) cross-file consistency (contradictions,
-wikilink targets, survivor/extract duplication). JUDGE the findings before
-applying: verify quoted text actually exists (panels paraphrase; two
-findings from one pass quoted text not present in any file) and check
-"wrong-looking" facts against the repo before correcting them (one flagged
-"impossible" migration timestamp was faithfully citing a fat-fingered repo
-filename; the suggested fix would have introduced an error). If fixes touch
+wikilink targets, survivor/extract duplication). Each lens returns the
+shared finding schema (Stage 3.5) with `quote` populated verbatim from the
+result file it is reviewing. Collect the lenses' JSON objects into
+`$SCRATCH/dream-panel-findings.json` and run the quote-existence gate
+against the built results before judging:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/memory_dream/cli.py" verify-findings \
+  --findings "$SCRATCH/dream-panel-findings.json" \
+  --root "$PS/results"
+```
+
+JUDGE the findings before applying: treat any finding the gate stamped
+`unverified_quote` (or that carries no `quote_checked` stamp at all,
+meaning its lens's gate invocation was skipped) as unverifiable rather than
+applying it at face value — panels paraphrase, and the gate exists because
+one pass's panel produced two findings quoting text present in no file.
+Also check "wrong-looking" facts against the repo before correcting them
+(one flagged "impossible" migration timestamp was faithfully citing a
+fat-fingered repo filename; the suggested fix would have introduced an
+error). If fixes touch
 descriptions or frontmatter names, re-run the changed side of the Stage 4.5
 benefit check; body-only fixes do not invalidate it.
 
@@ -368,7 +442,12 @@ template file-pointer slip, one from over-generalizing a sibling-cluster
 ruling), and two panel findings dissolved on a source grep. The session
 model adjudicates each proposed fix against ground truth (the source
 bodies, the repo, the live note) before it touches the drafts, and records
-accept/reject with the reason. Two orchestration-integrity rules that
+accept/reject with the reason. Before adjudicating, treat every finding the
+quote-existence gate stamped `unverified_quote: true` — and every finding
+carrying no `quote_checked` stamp at all, meaning its stage's gate
+invocation was skipped — as unverifiable: surface it to the operator rather
+than applying it or silently dropping it from consideration. Two
+orchestration-integrity rules that
 prevent the false positives at the source: persist every stage's findings
 to the canonical per-pass findings file BEFORE dispatching its fix editors
 (inline-only fix lists blind later checkers), and have A/B judge agents

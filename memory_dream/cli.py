@@ -32,13 +32,14 @@ def build_parser() -> argparse.ArgumentParser:
     # so `--version` and parser construction never depend on module import
     # side effects.
     from memory_dream import apply as apply_mod
-    from memory_dream import assemble, audit, recall_eval, transcript
+    from memory_dream import assemble, audit, recall_eval, transcript, verify_findings
 
     audit.add_parsers(subparsers)
     assemble.add_parsers(subparsers)
     transcript.add_parsers(subparsers)
     apply_mod.add_parsers(subparsers)
     recall_eval.add_parsers(subparsers)
+    verify_findings.add_parsers(subparsers)
     _add_doctor_parser(subparsers)
     _add_scratch_parser(subparsers)
     _add_open_preview_parser(subparsers)
