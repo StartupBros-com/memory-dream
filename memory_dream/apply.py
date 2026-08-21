@@ -358,14 +358,24 @@ def record_rejections(entries: list[dict[str, Any]]) -> None:
             corrupt = path.with_name(f"{REJECTIONS_FILENAME}.corrupt-{time.time_ns()}")
             try:
                 path.replace(corrupt)
-            except OSError:
-                pass  # best-effort rename; still write a fresh file below either way
+                print(
+                    f"memory-dream apply: WARNING corrupt {REJECTIONS_FILENAME} renamed aside to"
+                    f" {corrupt.name}; starting a fresh file",
+                    file=sys.stderr,
+                )
+            except OSError as rename_error:
+                print(
+                    f"memory-dream apply: WARNING corrupt {REJECTIONS_FILENAME} could not be renamed"
+                    f" aside ({rename_error}); overwriting it",
+                    file=sys.stderr,
+                )
             existing = []
-    path.write_text(
-        json.dumps({"schema_version": APPLY_SCHEMA_VERSION, "entries": existing + entries}, indent=2, sort_keys=True)
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
+    AUDIT.atomic_write(
+        path,
+        (
+            json.dumps({"schema_version": APPLY_SCHEMA_VERSION, "entries": existing + entries}, indent=2, sort_keys=True)
+            + "\n"
+        ).encode("utf-8"),
     )
 
 

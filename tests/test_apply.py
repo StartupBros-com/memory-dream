@@ -147,11 +147,14 @@ class Harness:
         )
 
 
-class MemoryDreamApplyTests(unittest.TestCase):
-    def _close_old_proposal(self, harness, key="proj"):
+class ApplyFixtureMixin:
+    """Shared fixture builders for apply-focused test classes (a mixin, not a
+    TestCase, so subclassing never duplicates inherited test methods)."""
+
+    def _close_old_proposal(self, harness, key="proj", pid="p1"):
         harness.add_proposal(
             {
-                "id": "p1",
+                "id": pid,
                 "project": key,
                 "action": "period-close",
                 "sources": [{"path": "old.md", "digest": harness.digest(key, "old.md")}],
@@ -169,6 +172,9 @@ class MemoryDreamApplyTests(unittest.TestCase):
         (live / "new.md").write_text(note("new", body="Current truth."), encoding="utf-8", newline="\n")
         harness.mirror_sync(key)
         return live
+
+
+class MemoryDreamApplyTests(ApplyFixtureMixin, unittest.TestCase):
 
     def test_archive_proposal_moves_index_entries(self):
         # Archive is index-only: entries move from MEMORY.md to MEMORY-archive.md
@@ -1009,7 +1015,7 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
         # applies.
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
-            live = self._standard_project(harness)
+            self._standard_project(harness)
             secret = harness.root / "outside_secret.md"
             secret.write_text("SECRET-CONTENT\n", encoding="utf-8", newline="\n")
             harness.add_proposal({
@@ -1172,7 +1178,7 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             self.assertIn(entry, (live / "MEMORY.md").read_text(encoding="utf-8"))  # index untouched
 
 
-class ApplyCompactionCanaryPreflightTests(unittest.TestCase):
+class ApplyCompactionCanaryPreflightTests(ApplyFixtureMixin, unittest.TestCase):
     """Apply's preflight runs the same compaction canary doctor runs, against
     the same CLAUDE_CONFIG_DIR/projects/<cwd-slug> transcripts directory
     (harness.run() always shells out with cwd=REPO_ROOT). Warn-only: it never
@@ -1199,28 +1205,6 @@ class ApplyCompactionCanaryPreflightTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
             newline="\n",
-        )
-
-    def _standard_project(self, harness, key="proj"):
-        live = harness.project(key)
-        (live / "MEMORY.md").write_text("- [Old](old.md)\n- [New](new.md)\n", encoding="utf-8", newline="\n")
-        (live / "old.md").write_text(note("old", body="SUPERSEDED: see new."), encoding="utf-8", newline="\n")
-        (live / "new.md").write_text(note("new", body="Current truth."), encoding="utf-8", newline="\n")
-        harness.mirror_sync(key)
-        return live
-
-    def _close_old_proposal(self, harness, key="proj"):
-        harness.add_proposal(
-            {
-                "id": "p1",
-                "project": key,
-                "action": "period-close",
-                "sources": [{"path": "old.md", "digest": harness.digest(key, "old.md")}],
-                "results": [],
-                "deletes": ["old.md"],
-                "justification": "superseded",
-                "sensitive": False,
-            }
         )
 
     def test_drift_warning_printed_but_does_not_change_success_exit_code(self):
@@ -1268,33 +1252,11 @@ class ApplyCompactionCanaryPreflightTests(unittest.TestCase):
             self.assertNotIn("consent-gate canary", result.stderr)
 
 
-class ApplyRejectionRecordingTests(unittest.TestCase):
+class ApplyRejectionRecordingTests(ApplyFixtureMixin, unittest.TestCase):
     """rejections.json durably records which PRESENTED proposals the operator
     did not approve: a sibling of the dated patch-set directories
     under config.pass_root(), never inside one, so pruning old pass dirs
     (the retention advisory's suggested cleanup) can never erase it."""
-
-    def _standard_project(self, harness, key="proj"):
-        live = harness.project(key)
-        (live / "MEMORY.md").write_text("- [Old](old.md)\n- [New](new.md)\n", encoding="utf-8", newline="\n")
-        (live / "old.md").write_text(note("old", body="SUPERSEDED: see new."), encoding="utf-8", newline="\n")
-        (live / "new.md").write_text(note("new", body="Current truth."), encoding="utf-8", newline="\n")
-        harness.mirror_sync(key)
-        return live
-
-    def _close_old_proposal(self, harness, key="proj", pid="p1"):
-        harness.add_proposal(
-            {
-                "id": pid,
-                "project": key,
-                "action": "period-close",
-                "sources": [{"path": "old.md", "digest": harness.digest(key, "old.md")}],
-                "results": [],
-                "deletes": ["old.md"],
-                "justification": "superseded",
-                "sensitive": False,
-            }
-        )
 
     def _rejections_path(self, harness):
         return harness.claude_config_dir / "logs" / "memory-dream" / "passes" / "rejections.json"

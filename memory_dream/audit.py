@@ -992,14 +992,47 @@ def update_deferral_streaks() -> list[dict[str, Any]]:
             }
         )
     streaks.sort(key=lambda r: (r["kind"], r["project"], r.get("path") or r.get("cluster_id") or ""))
-    root = config.pass_root()
-    root.mkdir(parents=True, exist_ok=True)
-    compat.restrict_permissions(root)
-    (root / DEFERRAL_STREAKS_FILENAME).write_text(
-        json.dumps({"schema_version": 1, "last_pass_id": pass_id, "streaks": streaks}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8", newline="\n",
-    )
+    # Best-effort durability: triage and doctor are crash-free health
+    # surfaces, so a failed streak write degrades to a warning (mirroring
+    # apply's record_rejections downgrade) and the freshly-computed streaks
+    # still serve this run.
+    try:
+        root = config.pass_root()
+        root.mkdir(parents=True, exist_ok=True)
+        compat.restrict_permissions(root)
+        atomic_write(
+            root / DEFERRAL_STREAKS_FILENAME,
+            (
+                json.dumps({"schema_version": 1, "last_pass_id": pass_id, "streaks": streaks}, indent=2, sort_keys=True)
+                + "\n"
+            ).encode("utf-8"),
+        )
+    except OSError as error:
+        print(f"memory-dream triage: WARNING could not write {DEFERRAL_STREAKS_FILENAME}: {error}", file=sys.stderr)
     return streaks
+
+
+def _suppress_by_paths(
+    all_flagged: list[dict[str, Any]],
+    by_project: dict[str, int],
+    path_set: set[tuple[str, str]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Partition flagged records into (kept, suppressed) by (project, path)
+    membership in `path_set`, decrementing `by_project` counts in place for
+    each suppressed record. Shared by the applied-side and rejected-side
+    suppression passes so their filter-and-recount logic cannot drift."""
+    kept: list[dict[str, Any]] = []
+    suppressed: list[dict[str, Any]] = []
+    for record in all_flagged:
+        if (record["project"], record["path"]) in path_set:
+            suppressed.append(record)
+        else:
+            kept.append(record)
+    for record in suppressed:
+        by_project[record["project"]] = by_project.get(record["project"], 1) - 1
+        if by_project.get(record["project"], 0) <= 0:
+            by_project.pop(record["project"], None)
+    return kept, suppressed
 
 
 def compute_triage(
@@ -1053,17 +1086,7 @@ def compute_triage(
     if suppress_applied_days > 0:
         recently_applied = recently_applied_paths(suppress_applied_days, now)
         if recently_applied:
-            kept = []
-            for record in all_flagged:
-                if (record["project"], record["path"]) in recently_applied:
-                    suppressed.append(record)
-                else:
-                    kept.append(record)
-            all_flagged = kept
-            for record in suppressed:
-                by_project[record["project"]] = by_project.get(record["project"], 1) - 1
-                if by_project.get(record["project"], 0) <= 0:
-                    by_project.pop(record["project"], None)
+            all_flagged, suppressed = _suppress_by_paths(all_flagged, by_project, recently_applied)
     # Rejection suppression: symmetric to the applied-side block above,
     # reading rejections.json instead of applied patch-set manifests. Runs
     # AFTER the applied-side filter and only against what survived it, so a
@@ -1074,17 +1097,7 @@ def compute_triage(
     if suppress_rejected_days > 0:
         recently_rejected = recently_rejected_paths(suppress_rejected_days, now)
         if recently_rejected:
-            kept = []
-            for record in all_flagged:
-                if (record["project"], record["path"]) in recently_rejected:
-                    suppressed_rejected.append(record)
-                else:
-                    kept.append(record)
-            all_flagged = kept
-            for record in suppressed_rejected:
-                by_project[record["project"]] = by_project.get(record["project"], 1) - 1
-                if by_project.get(record["project"], 0) <= 0:
-                    by_project.pop(record["project"], None)
+            all_flagged, suppressed_rejected = _suppress_by_paths(all_flagged, by_project, recently_rejected)
     all_flagged.sort(key=lambda record: (-record["score"], record["project"], record["path"]))
     # Repeat-deferral visibility: advance the durable streak file from
     # the newest pass dir's report.json (a no-op when there is no pass dir,

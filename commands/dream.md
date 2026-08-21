@@ -313,7 +313,14 @@ apply `low` fixes when cheap, and re-verify any proposal whose fixes were
 substantial. Treat any finding stamped `unverified_quote` (or carrying no
 `quote_checked` stamp at all) as unverifiable rather than acting on its
 quote at face value — confirm it against the source directly before fixing
-on its authority, and never drop it silently. Any correction that
+on its authority, and never drop it silently. Known limitation at this
+stage: the fidelity verifier binds each finding's `path` to the PROPOSED
+destination while its `quote` is copied from a source note, and the gate
+runs before build — so for a destination that does not exist on disk yet
+(extract/split/merge) `unverified_quote` is expected and carries no
+fabrication signal. Adjudicate those quotes against the cluster's source
+notes directly; do not read mass unverified stamps on new-destination
+findings as fabrication evidence. Any correction that
 deliberately diverges from the sources (repo evidence overruling a source
 note) MUST carry its evidence inline (PR number, commit, doc path, or check
 date), or a later verifier will correctly flag it as unsupported. A

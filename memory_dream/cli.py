@@ -196,12 +196,35 @@ def _stale_patch_sets(root: Path, retention_days: int) -> list[Path]:
     if not root.is_dir():
         return []
     cutoff = time.time() - retention_days * 86400
-    return sorted(p for p in root.iterdir() if p.is_dir() and p.stat().st_mtime < cutoff)
+    stale: list[Path] = []
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return []
+    for p in entries:
+        try:
+            if p.is_dir() and p.stat().st_mtime < cutoff:
+                stale.append(p)
+        except OSError:
+            continue  # vanished or unreadable mid-walk; an advisory check never crashes doctor
+    return sorted(stale)
 
 
 def _dir_size_bytes(path: Path) -> int:
-    """Total size of every regular file under `path`, recursively."""
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    """Total size of every regular file under `path`, recursively. Entries
+    that vanish or error mid-walk are skipped -- this feeds an advisory
+    report, so an approximate size beats a crashed doctor run."""
+    total = 0
+    try:
+        for f in path.rglob("*"):
+            try:
+                if f.is_file():
+                    total += f.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return total
 
 
 def _patch_set_retention_check(stale: list[Path]) -> tuple[str, bool, str, bool]:
@@ -281,7 +304,6 @@ def _preview_copy_retention_check(homes: list[Path]) -> tuple[str, bool, str, bo
 
 def _run_doctor(args) -> int:
     import datetime as dt
-    import importlib.util
     import os
     import shutil
 

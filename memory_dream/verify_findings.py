@@ -41,6 +41,17 @@ stage's gate invocation never reached at all carries neither key, so "the
 gate ran and could not verify" stays distinguishable downstream from "the
 gate never ran on this finding".
 
+Known limitation (Stage 3.5 fidelity findings): the fidelity prompt binds
+each finding's ``path`` to the PROPOSED destination file while its
+``quote`` is copied verbatim from a source note, and the gate runs before
+build. For a destination that does not exist on disk yet (extract, split,
+merge) ``unverified_quote`` is therefore expected and carries no
+fabrication signal -- adjudication must check those quotes against the
+cluster's source notes directly instead of trusting the stamp either way.
+Stages 3.7 and 3.8 cite files that already exist, so their stamps carry
+full signal. (commands/dream.md documents the same caveat in the Stage 3.5
+disposition lane.)
+
 Path confinement reuses ``audit.confined_path`` (the same helper
 ``recall_eval``'s snippet-fabrication check relies on), so a finding citing
 an absolute path, a ``..``-escaping path, or anything outside its base root
@@ -68,30 +79,45 @@ SCHEMA_VERSION = 1
 _UNVERIFIED = {"quote_checked": False, "unverified_quote": True}
 
 
-def verify_quote(root: Path, path: Any, quote: Any) -> dict[str, bool]:
-    """Stamps for one finding's quote-existence check: the quote (if any)
-    substring-matched (whitespace/case-normalized) against the file at
-    ``path``, confined to ``root``.
+def _normalized_file_content(root: Path, path: Any) -> str | None:
+    """Whitespace/case-normalized content of ``path`` confined to ``root``,
+    or None when the path is not a confined, readable file.
 
-    Never raises. Never opens a file for a path that fails confinement --
-    the confinement check runs before any read is attempted, so an
-    escaping or unresolvable ``path`` is rejected without the target file
-    ever being touched.
+    Never raises, and never opens a file for a path that fails confinement --
+    the confinement check runs before any read is attempted, so an escaping
+    or unresolvable ``path`` is rejected without the target file ever being
+    touched. A missing file (or a directory) surfaces as the read error the
+    OSError guard catches; no separate existence pre-check is needed.
     """
-    if not isinstance(quote, str) or not quote.strip():
-        return dict(_UNVERIFIED)
     if not isinstance(path, str) or not path:
-        return dict(_UNVERIFIED)
+        return None
     resolved = AUDIT.confined_path(root, path)
-    if resolved is None or not resolved.is_file():
-        return dict(_UNVERIFIED)
+    if resolved is None:
+        return None
     try:
         content = resolved.read_text(encoding="utf-8", errors="replace")
     except OSError:
+        return None
+    return normalize(content)
+
+
+def _stamps_for(normalized_content: str | None, quote: str) -> dict[str, bool]:
+    if normalized_content is None:
         return dict(_UNVERIFIED)
-    if normalize(quote) in normalize(content):
+    if normalize(quote) in normalized_content:
         return {"quote_checked": True}
     return dict(_UNVERIFIED)
+
+
+def verify_quote(root: Path, path: Any, quote: Any) -> dict[str, bool]:
+    """Stamps for one finding's quote-existence check: the quote (if any)
+    substring-matched (whitespace/case-normalized) against the file at
+    ``path``, confined to ``root``. Never raises; see
+    ``_normalized_file_content`` for the confinement-before-read guarantee.
+    """
+    if not isinstance(quote, str) or not quote.strip():
+        return dict(_UNVERIFIED)
+    return _stamps_for(_normalized_file_content(root, path), quote)
 
 
 def verify_findings_payload(data: Any, root: Path) -> tuple[Any, int, int]:
@@ -105,12 +131,16 @@ def verify_findings_payload(data: Any, root: Path) -> tuple[Any, int, int]:
     entry, or a "findings" value that is not a list -- which is left
     untouched rather than raising: this gate degrades a bad shape to
     "nothing stamped here", never a crash, matching its advisory contract.
+
+    Each unique cited path is confined, read, and normalized at most once
+    per invocation, however many findings cite it.
     """
     entries = data.get("files", data) if isinstance(data, dict) else data
     checked = 0
     unverified = 0
     if not isinstance(entries, list):
         return data, checked, unverified
+    content_cache: dict[str, str | None] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -121,7 +151,17 @@ def verify_findings_payload(data: Any, root: Path) -> tuple[Any, int, int]:
         for item in findings:
             if not isinstance(item, dict):
                 continue
-            stamps = verify_quote(root, path, item.get("quote"))
+            quote = item.get("quote")
+            if not isinstance(quote, str) or not quote.strip():
+                stamps = dict(_UNVERIFIED)
+            else:
+                if isinstance(path, str) and path in content_cache:
+                    normalized_content = content_cache[path]
+                else:
+                    normalized_content = _normalized_file_content(root, path)
+                    if isinstance(path, str):
+                        content_cache[path] = normalized_content
+                stamps = _stamps_for(normalized_content, quote)
             item.update(stamps)
             checked += 1
             if stamps.get("unverified_quote"):
@@ -145,7 +185,11 @@ def run_verify_findings(args: argparse.Namespace) -> int:
 
     data, checked, unverified = verify_findings_payload(data, root)
 
-    AUDIT.atomic_write(findings_path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    try:
+        AUDIT.atomic_write(findings_path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    except OSError as error:
+        print(f"memory-dream verify-findings: cannot write {findings_path}: {error}", file=sys.stderr)
+        return 0  # advisory: an unwritable output degrades to no stamps, never a crash
     print(f"memory-dream verify-findings: checked {checked}, unverified {unverified} -> {findings_path}")
     return 0
 

@@ -22,9 +22,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
 from memory_dream import verify_findings as VF
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _clean_env(claude_config_dir: Path) -> dict:
