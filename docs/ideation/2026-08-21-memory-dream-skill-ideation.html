@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ideation: Memory-Dream Skill Refresh — 2026-08-21</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #faf9f7;
+    --surface: #ffffff;
+    --ink: #1f2430;
+    --muted: #5b6472;
+    --line: #e3e0da;
+    --accent: #275e4f;
+    --accent-soft: #eaf3ef;
+    --accent-text: #1e4c40;
+    --warn: #8a4b12;
+    --warn-soft: #f9efe3;
+    --danger: #8c2f39;
+    --danger-soft: #f8ecec;
+    --info: #2c4f7c;
+    --info-soft: #ebf1f8;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.6;
+  }
+  .page { max-width: 880px; margin-inline: auto; padding: 40px 28px 64px; }
+  p, li, dd { max-width: 72ch; }
+  h1 { font-size: 1.9em; line-height: 1.2; margin: 0.2em 0 0.3em; letter-spacing: -0.015em; }
+  h2 { font-size: 1.35em; margin: 2.2em 0 0.6em; letter-spacing: -0.01em; border-bottom: 1px solid var(--line); padding-bottom: 0.35em; }
+  h3 { font-size: 1.08em; margin: 1.6em 0 0.4em; }
+  code { font-family: var(--mono); font-size: 0.86em; background: #f0eeea; border-radius: 4px; padding: 0.1em 0.35em; }
+  a { color: var(--info); }
+  .eyebrow { font-size: 0.72em; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent-text); }
+  .metaline { color: var(--muted); font-size: 0.92em; margin-bottom: 0.4em; }
+  .metaline strong { color: var(--ink); font-weight: 600; }
+  .stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 6px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; min-width: 118px; }
+  .stat .n { font-size: 1.35em; font-weight: 700; display: block; }
+  .stat .l { font-size: 0.78em; color: var(--muted); }
+  .verdict { background: var(--accent-soft); border: 1px solid #cfe2da; border-radius: 10px; padding: 14px 18px; margin: 20px 0; }
+  .verdict .eyebrow { display: block; margin-bottom: 4px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px 22px 16px; margin: 18px 0;
+  }
+  .card h3 { margin-top: 0; }
+  .idchip {
+    display: inline-block; font-family: var(--mono); font-weight: 600; font-size: 0.8em;
+    background: var(--accent-soft); color: var(--accent-text);
+    border-radius: 999px; padding: 2px 10px; margin-right: 8px; vertical-align: middle;
+  }
+  .cardmeta { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 14px; }
+  .pill {
+    font-size: 0.76em; font-weight: 600; border-radius: 999px; padding: 3px 11px;
+    background: #f0eeea; color: var(--muted);
+  }
+  .pill.axis { background: var(--info-soft); color: var(--info); }
+  .pill.conf-high { background: var(--accent-soft); color: var(--accent-text); }
+  .pill.conf-med { background: var(--warn-soft); color: var(--warn); }
+  .fields dt { font-size: 0.72em; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-top: 12px; }
+  .fields dd { margin: 3px 0 0 0; }
+  .fields { margin: 0; }
+  .basis-tag { font-family: var(--mono); font-size: 0.82em; font-weight: 600; color: var(--accent-text); }
+  .jump { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 18px; margin: 14px 0 6px; }
+  .jump ol { margin: 4px 0 4px 1.2em; padding: 0; }
+  .jump li { margin: 2px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.93em; }
+  th, td { border: 1px solid var(--line); padding: 7px 11px; text-align: left; vertical-align: top; }
+  th { background: #f3f1ed; font-size: 0.85em; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .mini-compare td:first-child { font-weight: 600; white-space: nowrap; }
+  figure { margin: 16px 0 6px; }
+  figcaption { font-size: 0.82em; color: var(--muted); margin-top: 6px; }
+  .diagram { width: 100%; height: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+  footer.composition-signal {
+    margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--line);
+    font-size: 0.82em; color: var(--muted);
+  }
+  .axislist li { margin: 5px 0; }
+  .axisname { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <span class="eyebrow">Ideation &middot; ce-ideate</span>
+  <h1>Memory-Dream Skill Refresh</h1>
+  <p class="metaline"><strong>Date:</strong> 2026-08-21 &nbsp;&middot;&nbsp; <strong>Topic:</strong> memory-dream-skill &nbsp;&middot;&nbsp; <strong>Mode:</strong> repo-grounded</p>
+  <p class="metaline"><strong>Focus:</strong> what else is worth doing to the memory-dream plugin — without over-engineering or process porn; refresh of the 2026-07-16 memory-system ideation.</p>
+  <div class="stats">
+    <div class="stat"><span class="n">45</span><span class="l">raw ideas, 5 frames</span></div>
+    <div class="stat"><span class="n">7</span><span class="l">survivors (ranked)</span></div>
+    <div class="stat"><span class="n">5</span><span class="l">axes, all covered</span></div>
+    <div class="stat"><span class="n">2</span><span class="l">refuted by verifier</span></div>
+  </div>
+</header>
+
+<div class="verdict">
+  <span class="eyebrow">The short answer</span>
+  The 2026-07-16 ideation is <strong>confirmed fully superseded — structurally, not just by progress</strong>: every commit in this repo postdates it (the plugin was extracted from the private harness starting 2026-08-08), and that doc addressed the predecessor dotfiles memory system. The repo today is in unusually good shape (v0.2.1, 191 tests, zero TODOs, stdlib-only), and 2026 external evidence <em>validates</em> the current proposal-only, reversible, operator-gated posture — the strongest research finding argues <strong>against</strong> more autonomy, which is the most tempting over-engineering direction. What remains is a short list of small closes: one real bug, several self-admitted loose ends, two credibility gaps (a verification check that exists only as a doc claim, and a positioning question with no answer), and review-burden trims that <em>reduce</em> ceremony rather than add it.
+</div>
+
+<section id="grounding-context">
+<h2>Grounding Context</h2>
+<h3>Codebase Context</h3>
+<p><strong>State:</strong> v0.2.1 at <code>ee628fd</code>; 191 tests passing; zero TODO/FIXME; zero runtime deps (CI-enforced). Three layers: deterministic triage (<code>audit.py</code>, no model calls) &rarr; deterministic assemble/apply plumbing &rarr; model-driven dream pass with a zero-tool drafter and a five-stage verification stack, behind a 7-gate apply. Every threshold lives in <code>config.py</code>, documented in <code>docs/TUNING.md</code> and <code>docs/ARCHITECTURE.md</code>. <code>README.md</code> is the product doc.</p>
+<p><strong>Self-admitted gaps</strong> (the repo's own words): thresholds "calibrated once, on one corpus" (~500 English notes, 2026-07); index caps "measured against Claude Code v2.1.211" and non-API; <code>PATCH_SET_RETENTION_DAYS</code> "does nothing on its own"; the active-session warning "becomes a false alarm the operator learns to ignore"; differentiation is one unelaborated sentence.</p>
+<p><strong>Recent activity since the old doc:</strong> extraction to marketplace-shippable state, Windows correctness, skill-tuner suite integration, release-train wiring, and one substantive security fix (compaction summaries forging operator consent, v0.2.1) — infrastructure hardening, no core-pipeline scope growth. No <code>docs/solutions/</code> learnings corpus exists (learnings search skipped).</p>
+<h3>External evidence (web research, value: high)</h3>
+<ul>
+  <li><a href="https://arxiv.org/pdf/2605.12978">"Useful Memories Become Faulty When Continuously Updated by LLMs"</a> (2026) — forced repeated LLM consolidation degrades agent performance (100%&rarr;54% in one case); each abstraction pass is a lossy rewrite that compounds. Empirical support for proposal-only, against autonomy.</li>
+  <li><a href="https://arxiv.org/html/2607.08032">Rate-distortion survey "What to Keep, What to Forget"</a> — reversibility is the property separating schemes that degrade gracefully from ones that compound error; validates snapshot + archive-don't-delete.</li>
+  <li><a href="https://forum.letta.com/t/sleeptime-agents-for-memory-consolidation-best-practices-guide/154">Letta sleep-time best practices</a> — expiry-policy table (decisions never expire; "reference count matters more than age"); explicit "don't over-consolidate — you lose granularity."</li>
+  <li>Claude Code's native <strong>Auto Dream</strong> (~Feb 2026): background consolidation, same "dream" framing, no operator diff/approval, no verification or measurement layer. Closest built-in competitor. <em>Single-web-sourced (<a href="https://code.claude.com/docs/en/memory">docs</a>, <a href="https://cc.bruniaux.com/guide/memory-systems/">guide</a>) — verify before citing in the README.</em></li>
+  <li>Memory poisoning is an active 2026 research area (<a href="https://arxiv.org/html/2607.06595v1">GhostWriter/AM-Sentry</a>, <a href="https://arxiv.org/html/2606.04329v1">MPBench</a>, Trojan Hippo, Zombie Agent, eTAMP): the zero-tool drafter + schema validation + sensitive-skip + operator review is architecturally the strongest mitigation pattern the research surfaced — a differentiator to state, not a gap to fill.</li>
+  <li>Two unrelated production postmortems converged on manual, periodic (every 2–4 weeks) consolidation over continuous automation — triangulated support for the operator-invoked cadence.</li>
+</ul>
+<h3>Prior ideation (2026-07-16)</h3>
+<p>Distilled to a 26-entry dossier: 7 ranked and 7 rejected ideas for the <em>predecessor</em> dotfiles-harness memory system, grounded in pain points (detection-only lifecycle, unbounded MEMORY.md growth, unguarded <code>rsync --delete</code>) that this repo's design has since absorbed or made obsolete. No surviving idea below depends on it; it served as a check that nothing was re-proposed unknowingly.</p>
+</section>
+
+<section id="topic-axes">
+<h2>Topic Axes</h2>
+<ul class="axislist">
+  <li><span class="axisname">threshold-calibration</span> — tunables and eval-driven re-measurement ("defaults, not truths")</li>
+  <li><span class="axisname">environment-drift</span> — host coupling: Claude Code version assumptions, transcript schema, Auto Dream coexistence, marketplace pin</li>
+  <li><span class="axisname">loose-ends</span> — gaps the repo's own docs name: retention prune, mirror hint, out-of-scope list, papercuts</li>
+  <li><span class="axisname">operator-experience</span> — review burden, cadence, proposal presentation, rollback</li>
+  <li><span class="axisname">positioning-trust</span> — differentiation, security posture, claims vs evidence</li>
+</ul>
+</section>
+
+<section id="ranked-ideas">
+<h2>Ranked Ideas</h2>
+<div class="jump">
+  <span class="eyebrow">Jump to</span>
+  <ol>
+    <li><a href="#i1">One honest drift doctor</a></li>
+    <li><a href="#i2">Deterministic quote-existence gate for panel findings</a></li>
+    <li><a href="#i3">The pipeline remembers its own decisions</a></li>
+    <li><a href="#i4">Close the retention loose ends</a></li>
+    <li><a href="#i5">Answer &ldquo;why not just Auto Dream&rdquo;</a></li>
+    <li><a href="#i6">Attention where the model touched content</a></li>
+    <li><a href="#i7">Standing recalibration, sentinel-sized</a></li>
+  </ol>
+</div>
+
+<article class="card" id="i1">
+  <h3><span class="idchip">1</span>One honest drift doctor</h3>
+  <div class="cardmeta">
+    <span class="pill axis">environment-drift</span>
+    <span class="pill conf-high">Confidence 85%</span>
+    <span class="pill">Complexity Medium</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Make <code>doctor</code> the single honest answer to "did anything drift under me." Five parts, all advisory: (a) consolidate the "measured against Claude Code v2.1.211" pin — currently six hand-synced copies across <code>config.py</code>, <code>audit.py</code>, <code>cli.py</code>, <code>TUNING.md</code>, <code>README.md</code>, <code>EXTRACTION-DESIGN.md</code> — into one compatibility record all sites interpolate; (b) fix the found bug: the index-cap doctor check passes a literal <code>True</code> (<code>cli.py:129-136</code>) and structurally cannot fail — compare the installed CLI version against the measured one instead; (c) a transcript-schema canary that asserts the consent-gate flags (<code>isCompactSummary</code>/<code>isVisibleInTranscriptOnly</code>) against the operator's <em>own</em> transcripts — today's <code>schema_probe</code> (<code>transcript.py:77-113</code>) checks only parseability, not gating, which is exactly the gap the v0.2.1 incident exploited; this doubles as a live, re-runnable proof of the CHANGELOG's 348/348 claim; (d) list any config value that differs from its shipped default, with its source (env/JSON) — no override-reporting exists today; (e) surface the already-computed <code>flagged:N</code> readiness signal, and offer one aggregate <code>--strict</code> verdict for post-upgrade scripts.</dd>
+    <dt>Basis</dt>
+    <dd><span class="basis-tag">direct:</span> <code>cli.py:129-136</code> hardcoded <code>True</code> (verified); six <code>v2.1.211</code> copies (verified by grep, 6 files / 7 lines); <code>transcript.py:77-113</code> parse-only probe (verified); the v0.2.1 consent-forgery incident (CHANGELOG, PR #11) as the proven failure class.</dd>
+    <dt>Rationale</dt>
+    <dd>This is the one drift class that has already produced a real security bug, and the mitigation today is "the operator remembers they upgraded." All five ideation frames independently converged on some form of this — the strongest convergence signal in the run. Every piece converts a recall-dependent habit into a check the tool runs, using the advisory pattern doctor already ships.</dd>
+    <dt>Downsides</dt>
+    <dd>Doctor grows surface (keep everything advisory, one aggregate line, or it becomes its own noise); the canary needs a readable current transcript at run time; shelling out to <code>claude --version</code> adds one environment dependency.</dd>
+  </dl>
+  <figure>
+    <svg class="diagram" viewBox="0 0 760 240" role="img" aria-label="Before: six files each carry a frozen version string and doctor always prints green. After: one compatibility record, doctor compares against the installed CLI.">
+      <text x="60" y="30" font-size="13" font-weight="700" fill="#8c2f39">TODAY</text>
+      <g fill="#f8ecec" stroke="#d9b8bc">
+        <rect x="30" y="45" width="88" height="26" rx="5"/>
+        <rect x="128" y="45" width="88" height="26" rx="5"/>
+        <rect x="226" y="45" width="88" height="26" rx="5"/>
+        <rect x="30" y="79" width="88" height="26" rx="5"/>
+        <rect x="128" y="79" width="88" height="26" rx="5"/>
+        <rect x="226" y="79" width="88" height="26" rx="5"/>
+      </g>
+      <g font-size="10" fill="#1f2430" font-family="monospace" text-anchor="middle">
+        <text x="74" y="62">config.py</text><text x="172" y="62">audit.py</text><text x="270" y="62">cli.py</text>
+        <text x="74" y="96">TUNING.md</text><text x="172" y="96">README.md</text><text x="270" y="96">EXTRACT&hellip;.md</text>
+      </g>
+      <text x="172" y="128" font-size="10.5" fill="#8c2f39" text-anchor="middle">6 hand-synced &ldquo;v2.1.211&rdquo; strings</text>
+      <rect x="70" y="150" width="200" height="46" rx="8" fill="#ffffff" stroke="#e3e0da"/>
+      <text x="170" y="169" font-size="11" text-anchor="middle" fill="#1f2430">doctor: index cap &hellip; ok=True</text>
+      <text x="170" y="186" font-size="10" text-anchor="middle" fill="#8c2f39">literal True — can never fail</text>
+
+      <line x1="380" y1="30" x2="380" y2="210" stroke="#e3e0da" stroke-width="1"/>
+
+      <text x="420" y="30" font-size="13" font-weight="700" fill="#1e4c40">PROPOSED</text>
+      <rect x="420" y="50" width="180" height="52" rx="8" fill="#eaf3ef" stroke="#cfe2da"/>
+      <text x="510" y="71" font-size="11" text-anchor="middle" fill="#1e4c40" font-weight="600">one compat record</text>
+      <text x="510" y="88" font-size="10" text-anchor="middle" fill="#1e4c40">measured version + values</text>
+      <rect x="420" y="150" width="300" height="52" rx="8" fill="#ffffff" stroke="#e3e0da"/>
+      <text x="570" y="171" font-size="11" text-anchor="middle" fill="#1f2430">doctor: installed CLI vs measured</text>
+      <text x="570" y="188" font-size="10" text-anchor="middle" fill="#1e4c40">+ transcript canary &middot; + non-default config list</text>
+      <line x1="510" y1="102" x2="510" y2="144" stroke="#5b6472" stroke-width="1.4" marker-end="url(#arr)"/>
+      <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#5b6472"/></marker></defs>
+    </svg>
+    <figcaption>Six frozen strings and a check that cannot fail become one record and a live comparison.</figcaption>
+  </figure>
+</article>
+
+<article class="card" id="i2">
+  <h3><span class="idchip">2</span>Deterministic quote-existence gate for panel findings</h3>
+  <div class="cardmeta">
+    <span class="pill axis">positioning-trust</span>
+    <span class="pill conf-high">Confidence 85%</span>
+    <span class="pill">Complexity Low</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Require every verification-panel finding to carry a machine-readable quoted span plus file reference (the current finding schema in <code>templates/fidelity-prompt.md</code> has only <code>claim</code>/<code>problem</code>/<code>fix</code>), and substring-check that span in code before the finding ever reaches model adjudication. Findings whose quote fails the check get flagged as unverifiable rather than silently trusted or dropped. Also fix <code>agents/scribe.md:24-25</code>, which currently <em>claims</em> "quote-existence checks on findings" happen — no such code exists anywhere; the only check today is a model-diligence instruction in <code>commands/dream.md:350-354</code>.</dd>
+    <dt>Basis</dt>
+    <dd><span class="basis-tag">direct:</span> <code>docs/PROVENANCE.md:115-126</code> — panels "produce confident false positives&hellip; a quoted passage that did not actually appear in any file"; the scribe.md doc/reality mismatch (verifier-found); precedent: <code>recall_eval.py:183</code> already runs exactly this substring check for another stage ("answer_snippet not found in source note (fabricated?)").</dd>
+    <dt>Rationale</dt>
+    <dd>This closes a dated, measured failure mode (2026-07-20) with <code>str.find()</code>-level code, and it tightens an existing stage rather than adding one. The whole product's trust claim is "it measures" — yet the layer that checks the drafter's work currently asks the operator to re-verify its claims by hand, and one doc oversells a guarantee no code backs. Both halves are pure credibility repair.</dd>
+    <dt>Downsides</dt>
+    <dd>Panels must be prompted to emit exact spans, which touches the finding schema, the panel templates, and the verification-coverage gate; genuinely paraphrase-shaped findings need a fallback lane (flag, don't discard) so the gate doesn't suppress real observations that lack a quotable span.</dd>
+  </dl>
+</article>
+
+<article class="card" id="i3">
+  <h3><span class="idchip">3</span>The pipeline remembers its own decisions</h3>
+  <div class="cardmeta">
+    <span class="pill axis">operator-experience</span>
+    <span class="pill conf-high">Confidence 80%</span>
+    <span class="pill">Complexity Low</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Two symmetric halves. <strong>Suppress-on-reject:</strong> <code>selection.json</code> records only <code>approved</code> IDs; nothing remembers what the operator turned down, so the next pass re-drafts and re-verifies the same cluster. Extend the existing <code>SUPPRESS_APPLIED_DAYS</code> mechanism (<code>config.py:32</code>) to rejected cluster signatures. <strong>Repeat-deferral visibility:</strong> <code>assemble.py</code> already persists per-item deferral detail (<code>{project, path/cluster_id, reason}</code> at <code>assemble.py:108/:131</code>) but the operator is shown only counts (<code>dream.md:99-100</code>) — surface which clusters keep losing the per-pass cap, pass after pass.</dd>
+    <dt>Basis</dt>
+    <dd><span class="basis-tag">direct:</span> all four code/doc claims verified by the fresh-context pass: approved-only <code>selection.json</code>, applied-only suppression, persisted-but-unsurfaced deferral records, counts-only reporting.</dd>
+    <dt>Rationale</dt>
+    <dd>"Rot accumulates unseen" is the exact failure this tool exists to fix in raw memory — and it recurs one layer up, inside the pipeline's own queue: a cluster can starve silently every pass, and a rejected proposal costs drafting and verification tokens again every pass. Both fixes reuse an existing mechanism or existing data; neither adds a pipeline stage.</dd>
+    <dt>Downsides</dt>
+    <dd>Rejected clusters need a stable signature that survives note renames/merges; suppression must decay (a rejection today isn't a rejection forever) — mirroring the applied-side day-window handles both.</dd>
+  </dl>
+  <figure>
+    <svg class="diagram" viewBox="0 0 760 190" role="img" aria-label="Applied proposals are suppressed for 14 days; rejected proposals are re-drafted every pass. Proposed: suppress rejections the same way.">
+      <rect x="30" y="35" width="150" height="40" rx="8" fill="#ffffff" stroke="#e3e0da"/>
+      <text x="105" y="59" font-size="11.5" text-anchor="middle" fill="#1f2430">proposal applied</text>
+      <rect x="290" y="35" width="200" height="40" rx="8" fill="#eaf3ef" stroke="#cfe2da"/>
+      <text x="390" y="59" font-size="11.5" text-anchor="middle" fill="#1e4c40">suppressed 14 days &#10003;</text>
+      <line x1="180" y1="55" x2="284" y2="55" stroke="#5b6472" stroke-width="1.4" marker-end="url(#arr2)"/>
+
+      <rect x="30" y="120" width="150" height="40" rx="8" fill="#ffffff" stroke="#e3e0da"/>
+      <text x="105" y="144" font-size="11.5" text-anchor="middle" fill="#1f2430">proposal rejected</text>
+      <rect x="290" y="120" width="200" height="40" rx="8" fill="#f8ecec" stroke="#d9b8bc"/>
+      <text x="390" y="138" font-size="11.5" text-anchor="middle" fill="#8c2f39">nothing recorded</text>
+      <text x="390" y="153" font-size="10" text-anchor="middle" fill="#8c2f39">re-drafted + re-verified next pass</text>
+      <line x1="180" y1="140" x2="284" y2="140" stroke="#5b6472" stroke-width="1.4" marker-end="url(#arr2)"/>
+      <rect x="560" y="120" width="170" height="40" rx="8" fill="#eaf3ef" stroke="#cfe2da" stroke-dasharray="5 3"/>
+      <text x="645" y="138" font-size="11" text-anchor="middle" fill="#1e4c40">proposed: suppress</text>
+      <text x="645" y="153" font-size="10" text-anchor="middle" fill="#1e4c40">same window as applied</text>
+      <line x1="490" y1="140" x2="554" y2="140" stroke="#1e4c40" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#arr3)"/>
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#5b6472"/></marker>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#1e4c40"/></marker>
+      </defs>
+    </svg>
+    <figcaption>The asymmetry: approval has memory, rejection has none.</figcaption>
+  </figure>
+</article>
+
+<article class="card" id="i4">
+  <h3><span class="idchip">4</span>Close the retention loose ends</h3>
+  <div class="cardmeta">
+    <span class="pill axis">loose-ends</span>
+    <span class="pill conf-high">Confidence 85%</span>
+    <span class="pill">Complexity Low</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Three separate code paths each create a copy of full memory-note content and assign deletion to the operator with no enforcing code: patch sets (<code>PATCH_SET_RETENTION_DAYS</code> — "does nothing on its own," <code>TUNING.md:83</code>), mirror-prune targets (<code>ARCHITECTURE.md:187-198</code>), and the WSL preview copy ("tell the operator to delete it after review," <code>dream.md:503-506</code>). Pick a resolution: (a) cheapest — a doctor advisory counting overdue patch sets, using the exact crash-leftover glob pattern doctor already ships; (b) fuller — one <code>cleanup</code> command sweeping expired patch sets (including preview copies) and reporting outstanding mirror-prune targets; or (c) delete the knob and the placeholder <code>MIRROR_PUSH_HINT</code> rather than shipping config whose own docs say it's inert.</dd>
+    <dt>Basis</dt>
+    <dd><span class="basis-tag">direct:</span> <code>config.py:59</code> ("advisory; pruning is operator-owned"), <code>TUNING.md:83</code>, <code>dream.md:503-506</code>, and the existing <code>*.dream-tmp</code> advisory pattern in <code>cli.py</code> — all verified.</dd>
+    <dt>Rationale</dt>
+    <dd>Unbounded accumulation of sensitive-content copies sits badly next to the tool's own privacy posture, and all five frames converged on this gap independently. The shared shape (tool creates copy, doc assigns cleanup, no code) means one decision closes three admitted gaps — the discussion is <em>which</em> resolution, not whether.</dd>
+    <dt>Downsides</dt>
+    <dd>An actual prune is destructive code in a tool whose identity is "never deletes" — the advisory-count option deliberately sidesteps that; deleting the knob forecloses a documented extension point some operator may already script against.</dd>
+  </dl>
+</article>
+
+<article class="card" id="i5">
+  <h3><span class="idchip">5</span>Answer &ldquo;why not just Auto Dream&rdquo;</h3>
+  <div class="cardmeta">
+    <span class="pill axis">positioning-trust</span>
+    <span class="pill conf-med">Confidence 75%</span>
+    <span class="pill">Complexity Low (docs only)</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>The README's entire differentiation is one sentence ("Plenty of tooling captures memories. Nothing consolidates them."), and the repo never mentions Claude Code's native Auto Dream — the closest competitor, shipping inside the same CLI, using the same "dream" framing. Replace the sentence with claims the repo can already prove: a named, dated contrast with Auto Dream's no-gate design (verify its current behavior first — it is single-web-sourced); a memory-poisoning paragraph citing the five 2026 papers, since the zero-tool-drafter architecture is already the strongest mitigation pattern in that literature; and a precisely-scoped coexistence statement — <code>apply.py:393-394/:443-447</code> already skips any proposal whose source note changed since draft (<code>source-changed-since-draft</code>), so an external writer mutating a note mid-pass is caught for note-body sources, while the index-reconcile path merges rather than digest-skips and should be described accordingly.</dd>
+    <dt>Basis</dt>
+    <dd><span class="basis-tag">direct:</span> <code>README.md:7</code> as the whole positioning story (verified by grep, zero Auto Dream mentions); digest-skip sites verified, with the verifier's scoping correction. <span class="basis-tag">external:</span> Auto Dream description (flagged single-source), five 2026 memory-poisoning papers.</dd>
+    <dt>Rationale</dt>
+    <dd>Every other trust claim in the repo is dated and measured; the one place the pattern breaks is the first question any evaluator asks. The material is already in hand — this is a write-up, not a build, and the coexistence half converts "we have no story" into "here's the code that already handles it."</dd>
+    <dt>Downsides</dt>
+    <dd>Auto Dream is undocumented and reportedly flaky — naming it dates the README (mitigate the way PROVENANCE.md does: date the claim); the coexistence statement must keep the verifier's scope or it oversells.</dd>
+  </dl>
+  <table class="mini-compare">
+    <tr><th></th><th>Auto Dream (native)</th><th>memory-dream</th></tr>
+    <tr><td>Operator gate</td><td>none — writes directly</td><td>per-proposal diff + token approval</td></tr>
+    <tr><td>Verification</td><td>none</td><td>fidelity &rarr; grounding &rarr; checker &rarr; panel &rarr; benefit</td></tr>
+    <tr><td>Measurement</td><td>none</td><td>recall evals, dated incident record</td></tr>
+    <tr><td>Reversibility</td><td>unstated</td><td>snapshot + archive-don't-delete</td></tr>
+  </table>
+</article>
+
+<article class="card" id="i6">
+  <h3><span class="idchip">6</span>Attention where the model touched content</h3>
+  <div class="cardmeta">
+    <span class="pill axis">operator-experience</span>
+    <span class="pill conf-med">Confidence 75%</span>
+    <span class="pill">Complexity Medium</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Make review ceremony proportional to model involvement, in three trims: (a) the active-session warning — which <code>TUNING.md:82</code> admits "becomes a false alarm the operator learns to ignore" — refires only when sibling-session state has actually changed (alarm-rationalization practice), or is demoted with a concrete "session X, active Y minutes ago" message; (b) the archive tier — fully deterministic, body-untouched, reversible (<code>dream.md:641-655</code>) — gets a coarser batch approval, since <code>SECURITY.md:85-86</code>'s per-item-review rationale (catching what "an automated forgery cannot anticipate") doesn't apply to a script-provable line move; consent stays mandatory, just at tier grain; (c) one aggregate line atop <code>preview.html</code> ("N proposals, all fidelity-clean, 0 flagged") from signals <code>assemble.py:820-823</code> already computes, so a clean pass approves in seconds and a flagged pass still routes to per-item diffs.</dd>
+    <dt>Basis</dt>
+    <dd><span class="basis-tag">direct:</span> all three anchors verified (<code>TUNING.md:82</code>, <code>dream.md:641-655</code> + <code>SECURITY.md:85-86</code>, <code>assemble.py:820-823</code>). <span class="basis-tag">external:</span> ISA-18.2-style alarm rationalization — suppress non-actionable repeats, alert on state change.</dd>
+    <dt>Rationale</dt>
+    <dd>Per-item diff review is the product's core control, and its credibility is currently being spent on false alarms and on ceremony for operations a script can prove. Habituation is the documented failure mode — protecting operator attention <em>is</em> protecting the gate. This is the survivor set's one genuinely ceremony-<em>reducing</em> idea, which is exactly what the focus asked for.</dd>
+    <dt>Downsides</dt>
+    <dd>Batch approval is a consent-semantics change and needs a careful SECURITY.md definition so proposal-only stays intact; the rollup line must never become a reason to skip diffs on a flagged pass (route flagged passes unchanged).</dd>
+  </dl>
+  <figure>
+    <svg class="diagram" viewBox="0 0 760 180" role="img" aria-label="Model-drafted proposals keep full per-item review; deterministic archive moves get batch consent.">
+      <text x="30" y="34" font-size="12" font-weight="600" fill="#1f2430">model-drafted merge</text>
+      <rect x="30" y="46" width="190" height="36" rx="8" fill="#ffffff" stroke="#e3e0da"/>
+      <text x="125" y="68" font-size="10.5" text-anchor="middle" fill="#5b6472">drafter + 5-stage verification</text>
+      <rect x="290" y="46" width="440" height="36" rx="8" fill="#eaf3ef" stroke="#cfe2da"/>
+      <text x="510" y="68" font-size="11" text-anchor="middle" fill="#1e4c40">full per-item diff review &middot; token approval (unchanged)</text>
+      <line x1="220" y1="64" x2="284" y2="64" stroke="#5b6472" stroke-width="1.4" marker-end="url(#arr4)"/>
+
+      <text x="30" y="122" font-size="12" font-weight="600" fill="#1f2430">deterministic archive move</text>
+      <rect x="30" y="134" width="190" height="36" rx="8" fill="#ffffff" stroke="#e3e0da"/>
+      <text x="125" y="156" font-size="10.5" text-anchor="middle" fill="#5b6472">script-provable, reversible</text>
+      <rect x="290" y="134" width="230" height="36" rx="8" fill="#eaf3ef" stroke="#cfe2da" stroke-dasharray="5 3"/>
+      <text x="405" y="156" font-size="11" text-anchor="middle" fill="#1e4c40">batch consent (proposed)</text>
+      <line x1="220" y1="152" x2="284" y2="152" stroke="#5b6472" stroke-width="1.4" marker-end="url(#arr4)"/>
+      <defs><marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#5b6472"/></marker></defs>
+    </svg>
+    <figcaption>Ceremony proportional to model involvement; consent required in both lanes.</figcaption>
+  </figure>
+</article>
+
+<article class="card" id="i7">
+  <h3><span class="idchip">7</span>Standing recalibration, sentinel-sized</h3>
+  <div class="cardmeta">
+    <span class="pill axis">threshold-calibration</span>
+    <span class="pill conf-med">Confidence 60%</span>
+    <span class="pill">Complexity Medium</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>The paired-flip eval machinery (suite hashing, noise bands, discriminability check) exists and has been used twice as ad hoc shadow experiments (2026-07-18/31). Package it as a <code>recalibrate</code> command; run it against a small fixed sentinel corpus (~20–30 notes, deliberately including the non-English and edge-case shapes the docs flag as untested) as a cheap drift canary; add a doctor advisory comparing current corpus size to the ~500-note calibration baseline. Full recalibration happens only when the sentinel drifts — the epidemiological sentinel-site pattern, not a standing campaign.</dd>
+    <dt>Basis</dt>
+    <dd><span class="basis-tag">direct:</span> <code>recall_eval.py</code> machinery and both dated recalibration events verified; "defaults, not truths" (<code>TUNING.md:16-18</code>). <span class="basis-tag">reasoned:</span> the gap is not missing infrastructure but a standing way to <em>notice</em> drift between rare full campaigns.</dd>
+    <dt>Rationale</dt>
+    <dd>"It measures, doesn't assume" is the product's identity, and every tunable is self-admittedly a one-time measurement. This makes re-measurement a command instead of tribal knowledge — the packaging is the whole idea; no new eval science.</dd>
+    <dt>Downsides</dt>
+    <dd>The most process-shaped survivor: the sentinel corpus needs curation, and an unrepresentative sentinel is eval theater. If it can't stay ~30 notes and one command, don't build it — that judgment is why confidence is 60%.</dd>
+  </dl>
+</article>
+</section>
+
+<section id="rejection-summary">
+<h2>Rejection Summary</h2>
+<table>
+  <tr><th>#</th><th>Idea</th><th>Reason Rejected</th></tr>
+  <tr><td>1</td><td>Dedup the inline decay half-life formula</td><td>Refuted by verification: already shipped — <code>decay_effective()</code> (<code>audit.py:449-466</code>) is the single shared helper; the evidence dossier had cited a pre-extraction doc as a live loose end.</td></tr>
+  <tr><td>2</td><td>Wire the &ldquo;dormant&rdquo; mirror-git corroboration signal</td><td>Refuted as framed: <code>audit.py:79-81</code> is a comment, not code — zero git calls exist in <code>memory_dream/</code>; this is net-new engineering sold as activation.</td></tr>
+  <tr><td>3</td><td>Deterministic merge fast-path for 0.9+ Jaccard duplicates</td><td>Weak: no measured prevalence of near-verbatim pairs; deterministic prose-merge is itself a design problem; borderline over-engineering. Revisit only if triage data shows the prevalence.</td></tr>
+  <tr><td>4</td><td>Generation counter on consolidated notes (<code>dream_generation</code>)</td><td>Sound (small, precedented via <code>preserve_metadata</code>, backed by arXiv 2605.12978) but cut at the survivor cap — lost the last slot to axis spread. First promotion if a slot opens; pairs naturally with idea 7.</td></tr>
+  <tr><td>5</td><td>Pin the skill-tuner CLI contract</td><td>Sound but a narrow chore below the final cut — the <code>be3847b</code> pin-and-test precedent applies; do opportunistically.</td></tr>
+  <tr><td>6</td><td>Automate the marketplace SHA re-pin</td><td>Sound; the manual bump has happened once — automation cost exceeds current benefit. Revisit on churn.</td></tr>
+  <tr><td>7</td><td>Surface <code>flagged:N</code>; <code>doctor --strict</code></td><td>Folded into idea 1.</td></tr>
+  <tr><td>8</td><td>Alarm fix, tiered consent, preview rollup as separate items</td><td>Folded into idea 6.</td></tr>
+  <tr><td>9</td><td>Suppress-on-reject and deferral identity as separate items</td><td>Folded into idea 3.</td></tr>
+  <tr><td>10</td><td>~30 further raw candidates</td><td>Merged into the seven survivors' clusters during dedupe (five-agent convergence was heavy); full attribution in the run's checkpoint files.</td></tr>
+</table>
+<p>All five axes have at least one survivor — no coverage gaps. One finding stands regardless of any idea's fate: <code>agents/scribe.md:24-25</code> claims a quote-existence check that no code performs (see idea 2).</p>
+</section>
+
+<footer class="composition-signal">Composed 2026-08-21 by ce-ideate (run 37f89933) from the operator prompt, repo grounding at <code>ee628fd</code>, a fresh-context basis verification pass, and the distilled 2026-07-16 predecessor ideation doc.</footer>
+
+</div>
+</body>
+</html>
