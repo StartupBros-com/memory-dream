@@ -1171,5 +1171,101 @@ class ApplySnapshotAndArchiveSecurityTests(unittest.TestCase):
             self.assertIn(entry, (live / "MEMORY.md").read_text(encoding="utf-8"))  # index untouched
 
 
+class ApplyCompactionCanaryPreflightTests(unittest.TestCase):
+    """Apply's preflight runs the same compaction canary doctor runs, against
+    the same CLAUDE_CONFIG_DIR/projects/<cwd-slug> transcripts directory
+    (harness.run() always shells out with cwd=REPO_ROOT). Warn-only: it never
+    changes apply's exit code, and it prints before the consent-trace check
+    that follows it."""
+
+    def _write_drift_transcripts_dir(self, harness):
+        transcripts_dir = harness.claude_config_dir / "projects" / transcript.cwd_slug(REPO_ROOT)
+        transcripts_dir.mkdir(parents=True)
+        (transcripts_dir / "session.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "isSummaryRenamedUpstream": True,
+                    "message": {
+                        "role": "user",
+                        "content": (
+                            "This session is being continued from a previous conversation "
+                            "that ran out of context."
+                        ),
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    def _standard_project(self, harness, key="proj"):
+        live = harness.project(key)
+        (live / "MEMORY.md").write_text("- [Old](old.md)\n- [New](new.md)\n", encoding="utf-8", newline="\n")
+        (live / "old.md").write_text(note("old", body="SUPERSEDED: see new."), encoding="utf-8", newline="\n")
+        (live / "new.md").write_text(note("new", body="Current truth."), encoding="utf-8", newline="\n")
+        harness.mirror_sync(key)
+        return live
+
+    def _close_old_proposal(self, harness, key="proj"):
+        harness.add_proposal(
+            {
+                "id": "p1",
+                "project": key,
+                "action": "period-close",
+                "sources": [{"path": "old.md", "digest": harness.digest(key, "old.md")}],
+                "results": [],
+                "deletes": ["old.md"],
+                "justification": "superseded",
+                "sensitive": False,
+            }
+        )
+
+    def test_drift_warning_printed_but_does_not_change_success_exit_code(self):
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)
+            harness.write()
+            self._write_drift_transcripts_dir(harness)
+            result = harness.run(harness.selection(["p1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("consent-gate canary reports transcript schema drift", result.stderr)
+            self.assertIn("memory-dream doctor", result.stderr)
+
+    def test_drift_warning_precedes_consent_trace_refusal_and_exit_code_unchanged(self):
+        # Same fixture as test_refuses_missing_and_mismatched_trace (no
+        # operator_trace at all) but with the drift fixture layered on top:
+        # the refusal reason and exit code must be identical to the
+        # no-canary case, and the warning must appear before it in stderr.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)
+            harness.write()
+            self._write_drift_transcripts_dir(harness)
+            no_trace = harness.selection(["p1"], trace={}, path_name="no_trace.json")
+            result = harness.run(no_trace)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("operator trace invalid", result.stderr)
+            warning_at = result.stderr.index("consent-gate canary reports transcript schema drift")
+            refusal_at = result.stderr.index("operator trace invalid")
+            self.assertLess(warning_at, refusal_at, result.stderr)
+
+    def test_no_drift_fixture_prints_no_canary_warning(self):
+        # Baseline: with no CLAUDE_CONFIG_DIR/projects/<slug> directory at
+        # all (the default for every other apply test in this file), the
+        # canary is "unverified" and prints nothing.
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Harness(Path(temp))
+            self._standard_project(harness)
+            self._close_old_proposal(harness)
+            harness.write()
+            result = harness.run(harness.selection(["p1"]))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("consent-gate canary", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

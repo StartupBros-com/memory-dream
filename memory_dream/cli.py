@@ -115,6 +115,24 @@ def _index_cap_check(installed_version: str | None) -> tuple[str, bool, str, boo
     )
 
 
+def _compaction_canary_check(probe_result: tuple[str, str]) -> tuple[str, bool, str, bool]:
+    """Build the doctor "compaction canary" (label, ok, detail, fatal) tuple.
+
+    `probe_result` is `transcript.compaction_canary`'s already-computed
+    (status, detail) pair -- passed in rather than probed here so the
+    ok/fatal mapping is directly unit-testable without a real transcripts
+    directory. Always advisory (fatal=False): a drift finding here means the
+    consent gate MAY currently be forgeable via the v0.2.1 shape, which is
+    worth a "warn" line, but doctor's job is to surface that, not to fail
+    closed on it (apply's preflight carries the same warning; neither changes
+    an exit contract). "unverified" (no compaction sample in the newest 5
+    transcripts, or no transcripts at all) reports `ok=True`: nothing was
+    found to be wrong, so it is never shown as drift.
+    """
+    status, detail = probe_result
+    return ("compaction canary", status != "drift", detail, False)
+
+
 def _run_doctor(args) -> int:
     import importlib.util
     import os
@@ -159,6 +177,8 @@ def _run_doctor(args) -> int:
         checks.append(("consent trace", found, detail, False))
     except Exception as exc:  # pragma: no cover - environment specific
         checks.append(("consent trace", False, str(exc), False))
+
+    checks.append(_compaction_canary_check(transcript.compaction_canary(transcript.transcripts_dir_for(Path.cwd()))))
 
     from memory_dream import compat
 

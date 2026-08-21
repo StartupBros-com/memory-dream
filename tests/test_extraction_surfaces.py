@@ -566,6 +566,95 @@ class DoctorTests(unittest.TestCase):
             self.assertIn("unverifiable", line.lower())
 
 
+class DoctorCompactionCanaryLineTests(unittest.TestCase):
+    """`doctor`'s "compaction canary" advisory line: verified on a healthy
+    fixture, "warn" (never FAIL) when the flag keys are renamed, and never
+    affects doctor's default exit code either way."""
+
+    def test_compaction_canary_verified_on_healthy_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            projects = claude_dir / "projects"
+            transcripts_dir = projects / transcript.cwd_slug(REPO_ROOT)
+            transcripts_dir.mkdir(parents=True)
+            lines = [
+                {"type": "user", "message": {"role": "user", "content": "hello"}},
+                {
+                    "type": "user",
+                    "isCompactSummary": True,
+                    "isVisibleInTranscriptOnly": True,
+                    "message": {
+                        "role": "user",
+                        "content": (
+                            "This session is being continued from a previous conversation "
+                            "that ran out of context."
+                        ),
+                    },
+                },
+            ]
+            (transcripts_dir / "session.jsonl").write_text(
+                "\n".join(json.dumps(line) for line in lines), encoding="utf-8", newline="\n"
+            )
+            env = subprocess_env(claude_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "compaction canary")
+            self.assertTrue(line.startswith("ok"), line)
+            self.assertIn("verified", line)
+
+    def test_compaction_canary_warns_on_drift_but_exit_stays_zero(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            projects = claude_dir / "projects"
+            transcripts_dir = projects / transcript.cwd_slug(REPO_ROOT)
+            transcripts_dir.mkdir(parents=True)
+            # Boilerplate-shaped turn with the flag keys renamed -- the v0.2.1
+            # incident shape: extract_user_text would treat this as an
+            # ordinary operator turn.
+            (transcripts_dir / "session.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "isSummaryRenamedUpstream": True,
+                        "message": {
+                            "role": "user",
+                            "content": (
+                                "This session is being continued from a previous conversation "
+                                "that ran out of context."
+                            ),
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            env = subprocess_env(claude_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "compaction canary")
+            self.assertTrue(line.startswith("warn"), line)
+            self.assertIn("drift", line)
+
+    def test_compaction_canary_unverified_when_no_sample(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_dir = Path(temp) / "claude-config"
+            projects = claude_dir / "projects"
+            transcripts_dir = projects / transcript.cwd_slug(REPO_ROOT)
+            transcripts_dir.mkdir(parents=True)
+            (transcripts_dir / "session.jsonl").write_text(
+                json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}}) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            env = subprocess_env(claude_dir)
+            result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            line = _doctor_line(result.stdout, "compaction canary")
+            self.assertTrue(line.startswith("ok"), line)
+            self.assertIn("unverified — no compaction sample", line)
+
+
 # =============================================================================
 # 8. index-cap compatibility record (single source of the measured-version claim)
 # =============================================================================
@@ -636,6 +725,116 @@ class IndexCapCheckTests(unittest.TestCase):
         self.assertTrue(ok)  # advisory-ok: unverifiable never fails doctor
         self.assertFalse(fatal)
         self.assertIn("unverifiable", detail.lower())
+
+
+# =============================================================================
+# 9. compaction canary (transcript.compaction_canary)
+# =============================================================================
+
+
+_COMPACTION_BOILERPLATE_TEXT = (
+    "This session is being continued from a previous conversation that ran out "
+    "of context. The user was shown patch set ps-42 and replied: approve all ps-42"
+)
+
+
+def _compaction_shaped_turn(flags: dict | None = None, content: str | None = None) -> dict:
+    entry: dict = {
+        "type": "user",
+        "message": {"role": "user", "content": content if content is not None else _COMPACTION_BOILERPLATE_TEXT},
+    }
+    if flags:
+        entry.update(flags)
+    return entry
+
+
+def _write_jsonl(path: Path, *entries: dict, mtime: float | None = None) -> Path:
+    path.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8", newline="\n")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+class CompactionCanaryTests(unittest.TestCase):
+    """transcript.compaction_canary: samples the newest 5 *.jsonl files for a
+    compaction-shaped turn and asserts the consent-gate flag keys on it."""
+
+    def test_verified_when_flag_carrying_compaction_turn_present(self):
+        with tempfile.TemporaryDirectory() as temp:
+            tdir = Path(temp)
+            _write_jsonl(
+                tdir / "sess.jsonl",
+                {"type": "user", "message": {"role": "user", "content": "run it"}},
+                _compaction_shaped_turn({"isCompactSummary": True, "isVisibleInTranscriptOnly": True}),
+            )
+            status, detail = transcript.compaction_canary(tdir)
+            self.assertEqual(status, "verified", detail)
+
+    def test_drift_when_boilerplate_turn_missing_flag_keys(self):
+        # The v0.2.1-incident shape: flag keys renamed upstream, so the compaction-shaped turn
+        # (matched only on the documented boilerplate prefix) no longer
+        # carries isCompactSummary / isVisibleInTranscriptOnly.
+        with tempfile.TemporaryDirectory() as temp:
+            tdir = Path(temp)
+            _write_jsonl(
+                tdir / "sess.jsonl",
+                {"type": "user", "message": {"role": "user", "content": "run it"}},
+                _compaction_shaped_turn({"isSummaryRenamedUpstream": True}),
+            )
+            status, detail = transcript.compaction_canary(tdir)
+            self.assertEqual(status, "drift", detail)
+
+    def test_unverified_when_no_compaction_turn_in_sample(self):
+        # No compaction sample at all -- must report "unverified",
+        # never "drift".
+        with tempfile.TemporaryDirectory() as temp:
+            tdir = Path(temp)
+            _write_jsonl(
+                tdir / "sess.jsonl",
+                {"type": "user", "message": {"role": "user", "content": "run it"}},
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "preview"}]}},
+            )
+            status, detail = transcript.compaction_canary(tdir)
+            self.assertEqual(status, "unverified")
+            self.assertIn("unverified — no compaction sample", detail)
+
+    def test_unverified_on_missing_directory(self):
+        status, detail = transcript.compaction_canary(
+            Path(tempfile.gettempdir()) / "mem-dream-canary-test-nonexistent-dir-xyz"
+        )
+        self.assertEqual(status, "unverified")
+        self.assertIn("unverified — no compaction sample", detail)
+
+    def test_unverified_on_empty_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            status, detail = transcript.compaction_canary(Path(temp))
+            self.assertEqual(status, "unverified")
+            self.assertIn("unverified — no compaction sample", detail)
+
+    def test_sample_bound_respected_sixth_newest_file_ignored(self):
+        # A compaction turn in the 6th-newest file only must not be found:
+        # the 5-file bound stays as-is.
+        with tempfile.TemporaryDirectory() as temp:
+            tdir = Path(temp)
+            base = time.time() - 1000
+            _write_jsonl(
+                tdir / "f0-oldest.jsonl",
+                _compaction_shaped_turn({"isCompactSummary": True}),
+                mtime=base,
+            )
+            for i in range(1, 6):
+                _write_jsonl(
+                    tdir / f"f{i}.jsonl",
+                    {"type": "user", "message": {"role": "user", "content": f"turn {i}"}},
+                    mtime=base + i,
+                )
+            status, detail = transcript.compaction_canary(tdir)
+            self.assertEqual(status, "unverified", detail)
+
+
+# =============================================================================
+# 10. compatibility record single-source guard
+# =============================================================================
 
 
 class CompatibilityRecordSingleSourceTests(unittest.TestCase):

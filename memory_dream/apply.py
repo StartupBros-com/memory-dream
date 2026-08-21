@@ -652,6 +652,22 @@ def _run_apply_locked(
             )
             return 1
     else:
+        # Compaction canary: the same advisory probe `doctor` runs, against
+        # the same cwd-derived transcripts directory. A drift finding here
+        # means the consent-trace verification below may currently be
+        # forgeable (the v0.2.1 incident shape: a compaction turn whose flag
+        # keys were renamed upstream reads as an ordinary operator turn).
+        # Warn-only -- it never gates and never changes this function's exit
+        # code -- but it must print BEFORE the verification it is warning
+        # about, so the operator sees it before any refusal reason.
+        canary_status, canary_detail = transcript.compaction_canary(transcript.transcripts_dir_for(Path.cwd()))
+        if canary_status == "drift":
+            print(
+                "memory-dream apply: WARNING consent-gate canary reports transcript schema "
+                f"drift ({canary_detail}) — the consent-trace check below may be unreliable; "
+                "run `memory-dream doctor`",
+                file=sys.stderr,
+            )
         if transcript_path is None:
             print("memory-dream apply: refusing, --consent trace requires --transcript", file=sys.stderr)
             return 1
