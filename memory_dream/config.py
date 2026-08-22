@@ -178,22 +178,38 @@ def _file_config() -> dict:
     return data
 
 
+def _coerce_override_value(name: str, value: object, *, json_encoded: bool, source: str) -> object:
+    """Coerce one override through the shipped value's type.
+
+    Environment values are strings, so list overrides are JSON-decoded. File
+    values have already been JSON-decoded, so list overrides are copied with
+    ``list()``. Scalar and dormant bool handling retain the previous source-
+    specific conversions and diagnostics exactly.
+    """
+    current = globals()[name]
+    try:
+        if isinstance(current, bool):  # not currently used; guard anyway
+            return str(value).lower() in ("1", "true", "yes") if json_encoded else bool(value)
+        if isinstance(current, list):
+            return json.loads(value) if json_encoded else list(value)
+        return type(current)(value)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"{source}: expected {type(current).__name__}: {exc}") from exc
+
+
 def _apply_env_overrides() -> None:
     """MEMORY_DREAM_<NAME> env vars override any threshold (env beats file)."""
     for name in _OVERRIDABLE:
-        raw = os.environ.get(_ENV_PREFIX + name)
+        env_name = _ENV_PREFIX + name
+        raw = os.environ.get(env_name)
         if raw is None:
             continue
-        current = globals()[name]
-        try:
-            if isinstance(current, bool):  # not currently used; guard anyway
-                globals()[name] = raw.lower() in ("1", "true", "yes")
-            elif isinstance(current, list):
-                globals()[name] = json.loads(raw)
-            else:
-                globals()[name] = type(current)(raw)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise SystemExit(f"env var {_ENV_PREFIX + name}: expected {type(current).__name__}: {exc}") from exc
+        globals()[name] = _coerce_override_value(
+            name,
+            raw,
+            json_encoded=True,
+            source=f"env var {env_name}",
+        )
 
 
 def load_file_config() -> None:
@@ -211,11 +227,12 @@ def load_file_config() -> None:
             continue
         name = key.upper()
         if name in _OVERRIDABLE:
-            current = globals()[name]
-            try:
-                globals()[name] = type(current)(value) if not isinstance(current, list) else list(value)
-            except (TypeError, ValueError) as exc:
-                raise SystemExit(f"config key {key}: expected {type(current).__name__}: {exc}") from exc
+            globals()[name] = _coerce_override_value(
+                name,
+                value,
+                json_encoded=False,
+                source=f"config key {key}",
+            )
         else:
             unknown.append(key)
     if unknown:
