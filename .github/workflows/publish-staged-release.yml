@@ -56,19 +56,38 @@ jobs:
           echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
           echo "$RELEASE_TAG -> ${release_sha:0:8} is on $DEFAULT_BRANCH"
 
-      - name: Require RELEASE_PAT
+      # Publishing must come from an identity whose events trigger workflows. Preferred: a
+      # short-lived installation token from the org's least-privilege release App; fallback:
+      # RELEASE_PAT. GITHUB_TOKEN is refused because its release event would never fire the train.
+      - name: Decide which release identity is available
+        id: identity
         env:
+          HOV_RELEASE_APP_ID: ${{ secrets.HOV_RELEASE_APP_ID }}
+          HOV_RELEASE_APP_PRIVATE_KEY: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
-          if [ -z "$RELEASE_PAT" ]; then
-            echo "::error::RELEASE_PAT is not configured. A GITHUB_TOKEN publish raises no release event, so the train would never announce. Publish from your own identity instead: gh release edit $RELEASE_TAG --repo $GITHUB_REPOSITORY --draft=false --latest"
+          if [ -n "$HOV_RELEASE_APP_ID" ] && [ -n "$HOV_RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "kind=app" >> "$GITHUB_OUTPUT"
+          elif [ -n "$RELEASE_PAT" ]; then
+            echo "kind=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::no release identity is configured (org secrets HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, or RELEASE_PAT). A GITHUB_TOKEN publish raises no release event, so the train would never announce. Publish from your own identity instead: gh release edit $RELEASE_TAG --repo $GITHUB_REPOSITORY --draft=false --latest"
             exit 1
           fi
+
+      - name: Mint a release App installation token
+        if: steps.identity.outputs.kind == 'app'
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
+          private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
 
       - name: Publish only when the live marketplace card names this release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          RELEASE_TOKEN: ${{ steps.app.outputs.token || secrets.RELEASE_PAT }}
+          IDENTITY: ${{ steps.identity.outputs.kind }}
           RELEASE_SHA: ${{ steps.tag.outputs.release_sha }}
         run: |
           set -euo pipefail
@@ -110,5 +129,6 @@ jobs:
             exit 1
           fi
 
-          GH_TOKEN="$RELEASE_PAT" gh release edit "$RELEASE_TAG" --draft=false --latest
-          echo "published $plugin $RELEASE_TAG; the release train announces from here"
+          [ -n "$RELEASE_TOKEN" ] || { echo "::error::release identity '$IDENTITY' produced no token"; exit 1; }
+          GH_TOKEN="$RELEASE_TOKEN" gh release edit "$RELEASE_TAG" --draft=false --latest
+          echo "published $plugin $RELEASE_TAG as $IDENTITY; the release train announces from here"
