@@ -103,27 +103,48 @@ jobs:
           fi
           echo "due=true" >> "$GITHUB_OUTPUT"
 
-      - name: Require RELEASE_PAT for automatic tagging
+      # The tag must be pushed by an identity whose events trigger workflows. Preferred: a
+      # short-lived installation token from the org's least-privilege release App
+      # (HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, contents: write on the plugin
+      # repositories only). Fallback: a RELEASE_PAT. Neither present: notice, no push.
+      - name: Decide which release identity is available
         if: steps.decide.outputs.due == 'true'
+        id: identity
         env:
+          HOV_RELEASE_APP_ID: ${{ secrets.HOV_RELEASE_APP_ID }}
+          HOV_RELEASE_APP_PRIVATE_KEY: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
-          if [ -z "$RELEASE_PAT" ]; then
-            echo "::notice::VERSION $VERSION is unreleased but RELEASE_PAT is not configured; falling back to the manual flow (push tag v$VERSION at this commit yourself). Add a fine-grained PAT with contents: read/write on this repository as the RELEASE_PAT secret, at repository or organization level, to automate."
+          if [ -n "$HOV_RELEASE_APP_ID" ] && [ -n "$HOV_RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "kind=app" >> "$GITHUB_OUTPUT"
+          elif [ -n "$RELEASE_PAT" ]; then
+            echo "kind=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=none" >> "$GITHUB_OUTPUT"
+            echo "::notice::VERSION $VERSION is unreleased but no release identity is configured (org secrets HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, or RELEASE_PAT); falling back to the manual flow: push tag v$VERSION at this commit yourself."
           fi
 
+      - name: Mint a release App installation token
+        if: steps.decide.outputs.due == 'true' && steps.identity.outputs.kind == 'app'
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
+          private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
+
       - name: Push the release tag
-        if: steps.decide.outputs.due == 'true'
+        if: steps.decide.outputs.due == 'true' && steps.identity.outputs.kind != 'none'
         env:
-          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          RELEASE_TOKEN: ${{ steps.app.outputs.token || secrets.RELEASE_PAT }}
+          IDENTITY: ${{ steps.identity.outputs.kind }}
           VERSION: ${{ steps.decide.outputs.version }}
           PLUGIN: ${{ steps.decide.outputs.plugin }}
         run: |
           set -euo pipefail
-          [ -n "$RELEASE_PAT" ] || exit 0
+          [ -n "$RELEASE_TOKEN" ] || { echo "::error::release identity '$IDENTITY' produced no token"; exit 1; }
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git tag -a "v$VERSION" -m "$PLUGIN v$VERSION" "$GITHUB_SHA"
-          git push "https://x-access-token:${RELEASE_PAT}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/v$VERSION"
-          echo "pushed v$VERSION at ${GITHUB_SHA:0:8}; release.yml stages the draft and the hov-marketplace reconciler opens the repin PR"
+          git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/v$VERSION"
+          echo "pushed v$VERSION at ${GITHUB_SHA:0:8} as $IDENTITY; release.yml stages the draft and the hov-marketplace reconciler opens the repin PR"
