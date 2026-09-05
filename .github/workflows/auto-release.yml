@@ -1,0 +1,129 @@
+name: Auto release on VERSION bump
+
+# Closes the merge->release gap for every hov-marketplace plugin: when the default
+# branch's VERSION has no matching tag yet, push the tag with the RELEASE_PAT identity
+# so the tag-push event triggers release.yml (events raised by GITHUB_TOKEN are
+# suppressed by GitHub's recursion rule and would leave the chain dead). Bumping
+# VERSION and plugin.json in a PR is therefore the SHIP signal. Everything downstream
+# keeps its guards: release.yml requires the tagged commit's CI to be green and stages
+# a DRAFT; the marketplace reconciler opens the repin PR; publish is a deliberate
+# dispatch once the card names the release.
+#
+# Without the RELEASE_PAT secret this workflow skips with a notice and the manual flow
+# (push the tag yourself) keeps working unchanged. The tag-absent guard makes it
+# idempotent and self-healing: a merge that failed to release is retried by the next
+# push, or by dispatching this workflow by hand.
+#
+# This file is identical across hov-marketplace plugins; the plugin name is read from
+# .claude-plugin/plugin.json. Pattern from pro-gate (2026-07), generalized 2026-09.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether a release is due
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::auto-release only runs from $DEFAULT_BRANCH (got $GITHUB_REF_NAME)"
+            exit 1
+          fi
+          version="$(tr -d '[:space:]' < VERSION)"
+          plugin="$(jq -er '.name' .claude-plugin/plugin.json)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "plugin=$plugin" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::notice::VERSION '$version' is not release semver; nothing to release"
+            echo "due=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          manifest="$(jq -er '.version' .claude-plugin/plugin.json)"
+          if [ "$manifest" != "$version" ]; then
+            echo "::error::plugin.json version ($manifest) does not match VERSION ($version); the release train refuses this state. Fix the bump on $DEFAULT_BRANCH."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1; then
+            state="$(gh release view "v$version" --json isDraft,isPrerelease \
+              --jq 'if .isDraft then "draft" elif .isPrerelease then "prerelease" else "published" end' 2>/dev/null || echo missing)"
+            case "$state" in
+              published)
+                echo "v$version is tagged and published; nothing to release"
+                # Read-only check that the published release actually reached the catalog.
+                # No redispatch: automatic re-runs of privileged stages are how release loops start.
+                rel_sha="$(git rev-list -n 1 "v$version")"
+                rel_id="$(gh release view "v$version" --json databaseId --jq .databaseId)"
+                if mkt="$(curl -fsS https://raw.githubusercontent.com/StartupBros-com/hov-marketplace/main/.claude-plugin/marketplace.json)"; then
+                  mismatch="$(printf '%s' "$mkt" | jq -r \
+                    --arg n "$plugin" --arg v "$version" --arg sha "$rel_sha" --arg id "$rel_id" --arg tag "v$version" '
+                    ([.plugins[] | select(type == "object" and .name == $n)] | first // {}) as $c |
+                    [ (if ($c.metadata.version // "") != $v then "version=\($c.metadata.version // "?")" else empty end),
+                      (if ($c.source.sha // "") != $sha then "sha=\(($c.source.sha // "?")[0:8])" else empty end),
+                      (if (($c.metadata.releaseId // 0) | tostring) != $id then "releaseId=\($c.metadata.releaseId // "?")" else empty end),
+                      (if ($c.metadata.releaseTag // "") != $tag then "releaseTag=\($c.metadata.releaseTag // "?")" else empty end)
+                    ] | join(", ")')"
+                  if [ -n "$mismatch" ]; then
+                    echo "::warning::hov-marketplace card for $plugin does not match published v$version ($mismatch). The reconciler runs hourly; if this persists, check its repin PR."
+                  fi
+                else
+                  echo "::warning::could not read the hov-marketplace manifest to verify $plugin v$version's promotion"
+                fi
+                ;;
+              draft)
+                echo "::notice::v$version is staged as a draft awaiting its marketplace repin. Merge the reconciler's repin PR in StartupBros-com/hov-marketplace, then run 'Publish staged release' for v$version."
+                ;;
+              *)
+                echo "::warning::Tag v$version exists but its release is '$state'. Nothing self-retries past tag creation by design: dispatch the 'Release' workflow with tag v$version to stage the draft, or delete the tag to let auto-release retry."
+                ;;
+            esac
+            echo "due=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "due=true" >> "$GITHUB_OUTPUT"
+
+      - name: Require RELEASE_PAT for automatic tagging
+        if: steps.decide.outputs.due == 'true'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          if [ -z "$RELEASE_PAT" ]; then
+            echo "::notice::VERSION $VERSION is unreleased but RELEASE_PAT is not configured; falling back to the manual flow (push tag v$VERSION at this commit yourself). Add a fine-grained PAT with contents: read/write on this repository as the RELEASE_PAT secret, at repository or organization level, to automate."
+          fi
+
+      - name: Push the release tag
+        if: steps.decide.outputs.due == 'true'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          VERSION: ${{ steps.decide.outputs.version }}
+          PLUGIN: ${{ steps.decide.outputs.plugin }}
+        run: |
+          set -euo pipefail
+          [ -n "$RELEASE_PAT" ] || exit 0
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "v$VERSION" -m "$PLUGIN v$VERSION" "$GITHUB_SHA"
+          git push "https://x-access-token:${RELEASE_PAT}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/v$VERSION"
+          echo "pushed v$VERSION at ${GITHUB_SHA:0:8}; release.yml stages the draft and the hov-marketplace reconciler opens the repin PR"

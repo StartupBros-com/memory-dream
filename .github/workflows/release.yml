@@ -1,0 +1,160 @@
+name: Release
+
+# Stage a DRAFT release for a pushed vX.Y.Z tag. Draft-first, per hov-marketplace
+# docs/plugin-release-recipe.md: the marketplace card needs the release id, which is
+# born here, while the announce guard needs the merged card. A draft has an id and
+# fires no announce, so the reconciler can pin it and publishing comes last.
+#
+# Gates: the tag must sit on the default branch, name exactly the VERSION and manifest
+# version, and point at a commit whose CI workflow runs all succeeded. The default
+# branch is protected by require-ci, so this is a verification, not a re-run. Release
+# notes come from docs/release-notes/v<version>.md when it carries a "## Highlights"
+# section with one-line bullets; otherwise GitHub auto-notes, with a warning, because
+# the drop card renders Highlights and falls back to PR titles.
+#
+# Re-runnable: dispatch with the tag to retry a failed stage. An existing draft or
+# published release is never touched. Identical across hov-marketplace plugins.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to stage (e.g. v0.2.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the tag on the default branch, matching VERSION and the manifest
+        id: tag
+        run: |
+          set -euo pipefail
+          git fetch origin "$DEFAULT_BRANCH" --tags
+          release_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+          if ! git merge-base --is-ancestor "$release_sha" "origin/$DEFAULT_BRANCH"; then
+            echo "::error::$RELEASE_TAG (${release_sha:0:8}) is not on $DEFAULT_BRANCH; refusing to stage a release from a side branch"
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$release_sha" ]; then
+            echo "::error::checkout HEAD is not $RELEASE_TAG"
+            exit 1
+          fi
+          version="$(tr -d '[:space:]' < VERSION)"
+          manifest="$(jq -er '.version' .claude-plugin/plugin.json)"
+          plugin="$(jq -er '.name' .claude-plugin/plugin.json)"
+          if [ "v$version" != "$RELEASE_TAG" ]; then
+            echo "::error::tag $RELEASE_TAG does not match VERSION $version at that commit"
+            exit 1
+          fi
+          if [ "$manifest" != "$version" ]; then
+            echo "::error::plugin.json version $manifest does not match VERSION $version"
+            exit 1
+          fi
+          {
+            echo "release_sha=$release_sha"
+            echo "version=$version"
+            echo "plugin=$plugin"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Require the tagged commit's CI workflow runs to be green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.tag.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          # CI on the default branch runs on the same push that auto-release reacts to, so
+          # it may still be in flight when the tag lands. Wait (bounded), then require every
+          # run other than the release plumbing itself to have succeeded.
+          started=$SECONDS
+          deadline=$((SECONDS + 1800))
+          while :; do
+            runs="$(gh run list --commit "$RELEASE_SHA" --limit 50 --json name,status,conclusion \
+              --jq '[.[] | select(.name != "Auto release on VERSION bump" and .name != "Release" and .name != "Publish staged release" and .name != "Release train")]')"
+            count="$(jq 'length' <<<"$runs")"
+            pending="$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")"
+            failed="$(jq -r '[.[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | map("\(.name)=\(.conclusion)") | join(", ")' <<<"$runs")"
+            if [ -n "$failed" ]; then
+              echo "::error::CI on ${RELEASE_SHA:0:8} did not pass: $failed. Fix on $DEFAULT_BRANCH, bump the version again; this tag stays unreleased."
+              exit 1
+            fi
+            if [ "$count" -gt 0 ] && [ "$pending" -eq 0 ]; then
+              echo "CI green on ${RELEASE_SHA:0:8}: $count workflow run(s) succeeded"
+              break
+            fi
+            if [ "$count" -eq 0 ] && [ $((SECONDS - started)) -ge 180 ]; then
+              echo "::error::no CI workflow run found for ${RELEASE_SHA:0:8} after 3 minutes; a release needs a green CI run on its commit"
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::CI on ${RELEASE_SHA:0:8} did not complete within 30 minutes (runs=$count pending=$pending)"
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Stage the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          PLUGIN: ${{ steps.tag.outputs.plugin }}
+        run: |
+          set -euo pipefail
+          if state="$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease \
+                --jq 'if .isDraft then "draft" elif .isPrerelease then "prerelease" else "published" end' 2>/dev/null)"; then
+            echo "::notice::$RELEASE_TAG already has a $state release; leaving it untouched"
+            exit 0
+          fi
+
+          notes="docs/release-notes/v$VERSION.md"
+          use_notes=0
+          if [ -s "$notes" ]; then
+            # Mirror the announcer's extraction: a "## Highlights" section whose bullets are
+            # single physical lines. A wrapped bullet reaches customers as its first clause.
+            body="$(tr -d '\r' < "$notes")"
+            case "$body" in
+              '##'*Highlights*|*$'\n##'*Highlights*) has_highlights=1 ;;
+              *) has_highlights=0 ;;
+            esac
+            section="$(printf '%s\n' "$body" | sed -n '/^##[[:space:]]*Highlights/,/^## /p')"
+            bullets="$(printf '%s\n' "$section" | grep -cE '^[*•-][[:space:]]' || true)"
+            wrapped="$(printf '%s\n' "$section" | grep -vE '^(##|[*•-][[:space:]]|[[:space:]]*$)' | grep -cE '^[[:space:]]' || true)"
+            if [ "$has_highlights" = 1 ] && [ "$bullets" -ge 1 ] && [ "$wrapped" -eq 0 ]; then
+              use_notes=1
+            else
+              echo "::warning::$notes exists but has no usable '## Highlights' section (bullets=$bullets, wrapped=$wrapped); falling back to auto-notes"
+            fi
+          else
+            echo "::warning::no $notes; the drop card will show GitHub's auto-generated PR titles. Add the file in the bump PR (hov-marketplace docs/plugin-release-recipe.md)."
+          fi
+
+          if [ "$use_notes" = 1 ]; then
+            gh release create "$RELEASE_TAG" --draft --verify-tag --title "$PLUGIN $RELEASE_TAG" --notes-file "$notes"
+          else
+            gh release create "$RELEASE_TAG" --draft --verify-tag --title "$PLUGIN $RELEASE_TAG" --generate-notes
+          fi
+          rel_id="$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)"
+          echo "::notice title=Release staged, not published::$PLUGIN $RELEASE_TAG is a draft (releaseId $rel_id). The hov-marketplace reconciler opens the repin PR within the hour; merge it, then run 'Publish staged release' with tag $RELEASE_TAG."
