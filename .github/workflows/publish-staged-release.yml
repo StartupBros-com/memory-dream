@@ -1,0 +1,114 @@
+name: Publish staged release
+
+# Second half of draft-first (hov-marketplace docs/plugin-release-recipe.md): flip the
+# staged draft to published once the LIVE marketplace card names it by version, tag,
+# releaseId and sha. The single publish event then announces with the card already
+# current, instead of failing the distribution guard and needing a re-fire.
+#
+# Deliberately a workflow_dispatch and not automatic: the card merge is the human
+# review point, and auto-dispatching a privileged publish from another repository is
+# how release loops start. The guard re-reads the live card, so a mistimed run cannot
+# publish an undistributed release.
+#
+# Publishing with RELEASE_PAT keeps the release event able to trigger the release
+# train; a GITHUB_TOKEN publish is suppressed by GitHub's recursion rule and would
+# leave the announce dead, so without the secret this refuses and tells you how to
+# publish from your own identity. Identical across hov-marketplace plugins.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Staged draft release tag to publish (e.g. v0.2.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-staged-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the tag on the default branch
+        id: tag
+        run: |
+          set -euo pipefail
+          git fetch origin "$DEFAULT_BRANCH" --tags
+          release_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+          if ! git merge-base --is-ancestor "$release_sha" "origin/$DEFAULT_BRANCH"; then
+            echo "::error::$RELEASE_TAG (${release_sha:0:8}) is not on $DEFAULT_BRANCH"
+            exit 1
+          fi
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "$RELEASE_TAG -> ${release_sha:0:8} is on $DEFAULT_BRANCH"
+
+      - name: Require RELEASE_PAT
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          if [ -z "$RELEASE_PAT" ]; then
+            echo "::error::RELEASE_PAT is not configured. A GITHUB_TOKEN publish raises no release event, so the train would never announce. Publish from your own identity instead: gh release edit $RELEASE_TAG --repo $GITHUB_REPOSITORY --draft=false --latest"
+            exit 1
+          fi
+
+      - name: Publish only when the live marketplace card names this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          RELEASE_SHA: ${{ steps.tag.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          plugin="$(jq -er '.name' .claude-plugin/plugin.json)"
+          state="$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease \
+            --jq 'if .isDraft then "draft" elif .isPrerelease then "prerelease" else "published" end')"
+          if [ "$state" = published ]; then
+            echo "::notice::$RELEASE_TAG is already published; nothing to do"
+            exit 0
+          fi
+          if [ "$state" != draft ]; then
+            echo "::error::$RELEASE_TAG is $state, not a draft"
+            exit 1
+          fi
+          version="${RELEASE_TAG#v}"
+          release_id="$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)"
+
+          if ! manifest="$(gh api -H 'Accept: application/vnd.github.raw+json' \
+              repos/StartupBros-com/hov-marketplace/contents/.claude-plugin/marketplace.json)"; then
+            echo "::error::could not read the hov-marketplace manifest (outage or auth, NOT evidence of staleness); re-run once the read succeeds"
+            exit 1
+          fi
+          if ! card="$(jq -ce --arg n "$plugin" '
+              [.plugins[] | select(type == "object" and .name == $n)]
+              | if length != 1 then error("not exactly one card") else .[0] end' <<<"$manifest")"; then
+            echo "::error::hov-marketplace does not hold exactly one card for $plugin"
+            exit 1
+          fi
+          card_version="$(jq -r '.metadata.version // ""' <<<"$card")"
+          card_tag="$(jq -r '.metadata.releaseTag // ""' <<<"$card")"
+          card_id="$(jq -r '(.metadata.releaseId // 0) | tostring' <<<"$card")"
+          card_sha="$(jq -r '.source.sha // ""' <<<"$card")"
+          card_url="$(jq -r '.source.url // ""' <<<"$card")"
+          expected_url="https://github.com/${GITHUB_REPOSITORY}.git"
+          if [ "$card_version" != "$version" ] || [ "$card_tag" != "$RELEASE_TAG" ] \
+             || [ "$card_id" != "$release_id" ] || [ "$card_sha" != "$RELEASE_SHA" ] \
+             || [ "$card_url" != "$expected_url" ]; then
+            echo "::error::marketplace card does not name $RELEASE_TAG (releaseId $release_id, sha ${RELEASE_SHA:0:8}); it lists $card_tag (releaseId $card_id, sha ${card_sha:0:8}, url $card_url). Merge the reconciler's repin PR in StartupBros-com/hov-marketplace first."
+            exit 1
+          fi
+
+          GH_TOKEN="$RELEASE_PAT" gh release edit "$RELEASE_TAG" --draft=false --latest
+          echo "published $plugin $RELEASE_TAG; the release train announces from here"
