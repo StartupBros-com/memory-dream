@@ -83,9 +83,11 @@ jobs:
           app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
           private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
 
+      # Reads use the release identity too: a draft is invisible to the job's read-only
+      # GITHUB_TOKEN, and the marketplace manifest is public either way.
       - name: Publish only when the live marketplace card names this release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || secrets.RELEASE_PAT }}
           RELEASE_TOKEN: ${{ steps.app.outputs.token || secrets.RELEASE_PAT }}
           IDENTITY: ${{ steps.identity.outputs.kind }}
           RELEASE_SHA: ${{ steps.tag.outputs.release_sha }}
