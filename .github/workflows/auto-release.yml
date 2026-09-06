@@ -39,10 +39,36 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Identity first: the release App token (or RELEASE_PAT) is also what lets the
+      # decide step SEE a staged draft, which the job's read-only GITHUB_TOKEN cannot.
+      - name: Decide which release identity is available
+        id: identity
+        env:
+          HOV_RELEASE_APP_ID: ${{ secrets.HOV_RELEASE_APP_ID }}
+          HOV_RELEASE_APP_PRIVATE_KEY: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          if [ -n "$HOV_RELEASE_APP_ID" ] && [ -n "$HOV_RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "kind=app" >> "$GITHUB_OUTPUT"
+          elif [ -n "$RELEASE_PAT" ]; then
+            echo "kind=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint a release App installation token
+        if: steps.identity.outputs.kind == 'app'
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
+          private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
+
       - name: Decide whether a release is due
         id: decide
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || secrets.RELEASE_PAT || github.token }}
+          IDENTITY: ${{ steps.identity.outputs.kind }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
@@ -95,44 +121,23 @@ jobs:
                 echo "::notice::v$version is staged as a draft awaiting its marketplace repin. Merge the reconciler's repin PR in StartupBros-com/hov-marketplace, then run 'Publish staged release' for v$version."
                 ;;
               *)
-                echo "::warning::Tag v$version exists but its release is '$state'. Nothing self-retries past tag creation by design: dispatch the 'Release' workflow with tag v$version to stage the draft, or delete the tag to let auto-release retry."
+                if [ "$IDENTITY" = none ]; then
+                  echo "::notice::Tag v$version exists; its release is '$state' as seen by GITHUB_TOKEN, which cannot see drafts. If it is a staged draft, merge the marketplace repin PR and publish; if it is truly missing, dispatch the 'Release' workflow with tag v$version."
+                else
+                  echo "::warning::Tag v$version exists but its release is '$state'. Nothing self-retries past tag creation by design: dispatch the 'Release' workflow with tag v$version to stage the draft, or delete the tag to let auto-release retry."
+                fi
                 ;;
             esac
             echo "due=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ "$IDENTITY" = none ]; then
+            echo "::notice::VERSION $version is unreleased but no release identity is configured (org secrets HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, or RELEASE_PAT); falling back to the manual flow: push tag v$version at this commit yourself."
+          fi
           echo "due=true" >> "$GITHUB_OUTPUT"
 
-      # The tag must be pushed by an identity whose events trigger workflows. Preferred: a
-      # short-lived installation token from the org's least-privilege release App
-      # (HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, contents: write on the plugin
-      # repositories only). Fallback: a RELEASE_PAT. Neither present: notice, no push.
-      - name: Decide which release identity is available
-        if: steps.decide.outputs.due == 'true'
-        id: identity
-        env:
-          HOV_RELEASE_APP_ID: ${{ secrets.HOV_RELEASE_APP_ID }}
-          HOV_RELEASE_APP_PRIVATE_KEY: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
-          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
-          VERSION: ${{ steps.decide.outputs.version }}
-        run: |
-          if [ -n "$HOV_RELEASE_APP_ID" ] && [ -n "$HOV_RELEASE_APP_PRIVATE_KEY" ]; then
-            echo "kind=app" >> "$GITHUB_OUTPUT"
-          elif [ -n "$RELEASE_PAT" ]; then
-            echo "kind=pat" >> "$GITHUB_OUTPUT"
-          else
-            echo "kind=none" >> "$GITHUB_OUTPUT"
-            echo "::notice::VERSION $VERSION is unreleased but no release identity is configured (org secrets HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, or RELEASE_PAT); falling back to the manual flow: push tag v$VERSION at this commit yourself."
-          fi
-
-      - name: Mint a release App installation token
-        if: steps.decide.outputs.due == 'true' && steps.identity.outputs.kind == 'app'
-        id: app
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
-          private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
-
+      # The tag must be pushed by an identity whose events trigger workflows: the App
+      # token minted above (contents: write on the plugin repositories only) or RELEASE_PAT.
       - name: Push the release tag
         if: steps.decide.outputs.due == 'true' && steps.identity.outputs.kind != 'none'
         env:

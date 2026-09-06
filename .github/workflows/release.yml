@@ -96,13 +96,19 @@ jobs:
               --jq '[.[] | select(.name != "Auto release on VERSION bump" and .name != "Release" and .name != "Publish staged release" and .name != "Release train")]')"
             count="$(jq 'length' <<<"$runs")"
             pending="$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")"
+            succeeded="$(jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length' <<<"$runs")"
             failed="$(jq -r '[.[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | map("\(.name)=\(.conclusion)") | join(", ")' <<<"$runs")"
             if [ -n "$failed" ]; then
               echo "::error::CI on ${RELEASE_SHA:0:8} did not pass: $failed. Fix on $DEFAULT_BRANCH, bump the version again; this tag stays unreleased."
               exit 1
             fi
             if [ "$count" -gt 0 ] && [ "$pending" -eq 0 ]; then
-              echo "CI green on ${RELEASE_SHA:0:8}: $count workflow run(s) succeeded"
+              # Zero-run green is failure: a set of skipped/neutral runs proves nothing ran.
+              if [ "$succeeded" -eq 0 ]; then
+                echo "::error::CI on ${RELEASE_SHA:0:8} completed without a single successful run ($count run(s), all skipped or neutral); a release needs a CI run that actually passed"
+                exit 1
+              fi
+              echo "CI green on ${RELEASE_SHA:0:8}: $succeeded of $count workflow run(s) succeeded, none failed or pending"
               break
             fi
             if [ "$count" -eq 0 ] && [ $((SECONDS - started)) -ge 180 ]; then
