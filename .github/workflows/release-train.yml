@@ -15,4 +15,4 @@ permissions:
 
 jobs:
   announce:
-    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@08f7d22f3a5b59b1658ab2e96a20d0d3c352869c # fix: bind Tool Drop intent to the promoted release
+    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@66e197874fe627f3d5f58dff49737e7747d20bfe # fix: retry the promotion-propagation 403

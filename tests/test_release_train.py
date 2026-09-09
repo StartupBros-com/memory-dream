@@ -2,8 +2,8 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HARDENED_SHA = "08f7d22f3a5b59b1658ab2e96a20d0d3c352869c"
-RETIRED_SHA = "c981b872ebf650805200ad72c8b7142232f8b3f6"
+HARDENED_SHA = "66e197874fe627f3d5f58dff49737e7747d20bfe"
+RETIRED_SHA = "08f7d22f3a5b59b1658ab2e96a20d0d3c352869c"
 EXPECTED_WORKFLOW = f"""name: Release train
 
 # Announce-only Tool Drop train, shared across the whole hov catalog.
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   announce:
-    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@{HARDENED_SHA} # fix: bind Tool Drop intent to the promoted release
+    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@{HARDENED_SHA} # fix: retry the promotion-propagation 403
 """
 
 
