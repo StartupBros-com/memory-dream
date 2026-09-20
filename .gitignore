@@ -5,3 +5,4 @@ dist/
 build/
 .ruff_cache/
 .claude/worktrees/
+evals/results/
