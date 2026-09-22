@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.4.0 — 2026-09-22
+
+- **Fix (agents)**: drafter and scribe now declare an explicit minimal tool
+  list (`Glob` only) and `omitClaudeMd: true`. An empty list grants every
+  inherited tool in Claude Code, so the previous declarations did not enforce
+  the documented restriction. All task inputs are passed inline; the parent
+  reads cluster shards and review files before dispatch. Agent regression
+  tests enforce non-empty, read-only tool lists and omitted host instructions.
+- **New (preview)**: config key `preview_opener`, overridden by
+  `MEMORY_DREAM_PREVIEW_OPENER`, runs a command without a shell, appends the
+  original preview path, waits, and returns its exit code. It bypasses all
+  built-in openers and the WSL copy into the Windows profile, which otherwise
+  duplicates full memory bodies. Command failures do not trigger a fallback.
+- **New (eval)**: `sample` and `routing-input` accept `--out-file PATH` using
+  the same JSON output helpers as `plan` and `trace`. The eval command uses
+  these flags instead of shell redirects; default stdout behavior is unchanged.
+- **Docs**: worked mirror-mode config examples explain the flat per-project
+  mirror layout, custom preview opener, and hard errors for unknown keys.
+- **Release**: plugin, Python package, and CLI versions now agree at `0.4.0`,
+  with a regression check for version agreement.
+
 ## v0.3.0 — 2026-08-21
 
 The plugin's documented assumptions become runtime checks, and a pass now
@@ -45,7 +66,7 @@ default: no new check changes doctor's default exit code.
   conversation verbatim and `trace` scans backward from the end of the
   transcript, a compaction landing between "preview generated" and "operator
   approves" could reproduce the approval token in a turn no human typed — and
-  that synthetic turn would be *preferred* over a genuine earlier approval.
+  that synthetic turn would be _preferred_ over a genuine earlier approval.
   That is exactly the property the gate exists to guarantee. Now rejected on
   the `isCompactSummary` / `isVisibleInTranscriptOnly` flags rather than on
   model-written prose; measured across 400 live transcripts, 348/348 entries
@@ -57,7 +78,7 @@ default: no new check changes doctor's default exit code.
   statically proven safe, so agent command guards refuse it — which halted the
   documented pass at its first step. `commands/dream.md` now uses the flag.
   Spelled `--out-file`, not `--out`, because `build`/`archive` already use
-  `--out` for an output *directory*. Stdout behavior without the flag is
+  `--out` for an output _directory_. Stdout behavior without the flag is
   unchanged.
 
 ## v0.2.0 — 2026-08-08
@@ -108,16 +129,16 @@ Initial public release.
   console script). Zero dependencies.
 - **`/memory-dream:dream`** — an operator-gated consolidation pass over
   Claude Code auto-memory: deterministic triage and clustering, drafting by a
-  zero-tool subagent (note bodies are untrusted input and can never drive a
-  write), fidelity/repo-grounding/quality verification, per-proposal diff
+  drafting subagent (note bodies treated as untrusted input),
+  fidelity/repo-grounding/quality verification, per-proposal diff
   preview with item-by-item approval, and a gated apply with single-flight
   locking, consent-trace verification, per-project atomic writes, snapshot
   backup, and `memory-dream restore`.
 - **`/memory-dream:eval`** — a frozen, content-anchored recall-regression
   suite that scores index routing accuracy before and after a pass instead of
   assuming it improved.
-- **Security model** (SECURITY.md): single-operator trust model, zero-tool
-  drafter, verified post-preview consent, and an explicit opt-in
+- **Security model** (SECURITY.md): single-operator trust model, restricted
+  drafting (the declaration bug is fixed in v0.4.0), verified post-preview consent, and an explicit opt-in
   reduced-consent token mode for non-Claude-Code harnesses.
 - **180-test suite** (stdlib unittest, no network, no model calls) across
   ubuntu/macos/windows × Python 3.10/3.12, plus two CI-enforced hygiene

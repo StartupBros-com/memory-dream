@@ -18,7 +18,7 @@ One pass, operator-gated end to end:
 
 1. **Triage** scores every note on structural rot: supersession markers, oversized bodies, decayed confidence. Deterministic, read-only, no model calls.
 2. **Plan** clusters the flagged notes per project. Deterministic.
-3. **Draft** hands each cluster to a **zero-tool subagent**: note bodies in, one JSON object out. A prompt injection inside a note body has no Bash, no Write, no file access, and its output is re-validated, path-confined, and operator-reviewed before it can change anything.
+3. **Draft** hands each cluster to a **subagent with an explicit minimal tool list**: note bodies inline, one JSON object out. Both agents declare `Glob` only (unused by their prompts); an empty list would grant every inherited tool. They can list paths but cannot read bodies, write files, run commands, or spawn agents. `omitClaudeMd: true` keeps unrelated host instructions out, and their output is re-validated, path-confined, and operator-reviewed before it can change anything.
 4. **Verify** runs the drafted changes through fidelity verification against sources, repo grounding for task-state claims, a checker pass over the corrections themselves, and a fresh-eyes quality panel. The build refuses any cluster without a recorded, content-bound verification verdict.
 5. **Preview** builds a patch set with per-proposal diffs and an HTML review surface. You approve item by item, by token. Reject everything and nothing is written.
 6. **Apply** runs a gate stack that refuses rather than guesses: single-flight lock, consent trace, sensitive-content skip, changed-since-draft skip, destination confinement, per-project atomic writes with rollback. Every touched file is snapshotted first; `memory-dream restore` undoes an applied pass.
@@ -58,6 +58,35 @@ memory-dream doctor
 ```
 
 Start with `doctor`. It tells you which mode you are in (snapshot vs mirror), whether the consent trace can see your transcripts, and which caps apply.
+
+### Mirror mode and a custom preview opener
+
+For a harness that keeps a git-backed mirror and provides its own browser
+opener, create `~/.claude/memory-dream.json` (or
+`$CLAUDE_CONFIG_DIR/memory-dream.json` when configured). This is a worked
+example; replace the paths and command with your own:
+
+```json
+{
+  "mirror_root": "~/memory-mirror",
+  "mirror_push_hint": "~/bin/sync-memory-mirror",
+  "preview_opener": "firefox --new-window"
+}
+```
+
+`project_dirs(live=False)` expects `<mirror_root>/<project-dir>/MEMORY.md`
+and note files beside it, with **no `memory/` subdirectory**. Live memory
+instead lives under `<config-dir>/projects/<project-dir>/memory/`. Keep the
+same project-directory names on both sides. `mirror_push_hint` supplies the
+remediation text when the mirror is stale; memory-dream does not run it.
+Unknown JSON keys are a **hard error** at startup.
+
+`preview_opener` runs without a shell, with the original `preview.html` path
+appended as its final argument, and returns the command's exit code. It
+bypasses every built-in opener, including the WSL copy into the Windows
+profile that would otherwise duplicate full memory bodies. Set
+`MEMORY_DREAM_PREVIEW_OPENER` to override the config value; omit the setting
+to retain platform defaults. See [docs/TUNING.md](docs/TUNING.md) for details.
 
 ## What makes it trustworthy
 
