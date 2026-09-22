@@ -14,7 +14,7 @@ per-project memory stores, plus a **recall eval** that measures whether a pass
 actually improved retrieval instead of assuming it.
 
 Pipeline (one pass): deterministic triage → deterministic clustering → drafting
-by a **zero-tool subagent** (note bodies are untrusted input and can never
+by a **restricted subagent** (note bodies are untrusted input and can never
 drive a write) → fidelity/grounding/quality verification stages → deterministic
 patch-set build → HTML preview + item-by-item operator approval → gated apply
 that refuses rather than guesses → snapshot-backed recovery.
@@ -28,8 +28,8 @@ memory-dream/
     dream.md                      # /memory-dream:dream — the consolidation pass
     eval.md                       # /memory-dream:eval  — the recall eval
   agents/
-    drafter.md                    # zero-tool consolidation drafter (memory-dream:drafter)
-    scribe.md                     # zero-tool eval writer/judge     (memory-dream:scribe)
+    drafter.md                    # restricted consolidation drafter (memory-dream:drafter)
+    scribe.md                     # restricted eval writer/judge     (memory-dream:scribe)
   memory_dream/                   # real Python package, stdlib-only
     __init__.py                   # __version__
     __main__.py                   # python3 -m memory_dream
@@ -60,6 +60,7 @@ memory-dream/
 ## Module mapping and required changes
 
 Shared rules for every ported module:
+
 - Underscore module names, normal `from memory_dream import audit as AUDIT`
   imports. Delete every `importlib.util.spec_from_file_location` sibling loader.
 - No module-level work that can fail (the old `AUDIT = load_auditor()` at
@@ -74,6 +75,7 @@ Shared rules for every ported module:
   line and the `DREAM-APPLY-COMPLETE ...` completion line are documented API.
 
 ### audit.py (from memory-audit.py, 1455 lines)
+
 - Subcommands preserved: full audit (default), `triage`, `fix [--apply]`.
 - Mirror handling: `--mirror-root` default becomes **None** (feature off).
   All `mirror_*` finding classes and the fix-apply freshness gate run only when
@@ -91,6 +93,7 @@ Shared rules for every ported module:
   them (crash-recovery leftovers).
 
 ### assemble.py (from memory-dream-assemble.py, 1420 lines)
+
 - Subcommands preserved: `plan`, `build`, `archive`, `trace`.
 - `trace` moves its transcript parsing to `transcript.py` (shared with apply).
 - Scratch defaults (previously a session-scoped temp dir) → `config.scratch_dir()`.
@@ -101,6 +104,7 @@ Shared rules for every ported module:
 - All Jaccard/caps/suppression constants from config.
 
 ### apply.py (from memory-dream-apply.py, 667 lines)
+
 - Flat CLI preserved (`--patch-set --selection --transcript --preflight ...`).
 - **Backup provider abstraction** (the mirror-hard-dependency fix, gate 3):
   - Default (no mirror configured): before any write, snapshot every affected
@@ -127,6 +131,7 @@ Shared rules for every ported module:
   becomes `next=<config mirror_push_hint or "none">`.
 
 ### recall_eval.py (from memory-recall-eval.py, 635 lines)
+
 - Subcommands preserved: `sample`, `freeze`, `routing-input`, `score`,
   `discriminability`.
 - Eval-home defaults (`~/.claude/logs/memory-eval/…`) → config
@@ -137,6 +142,7 @@ Shared rules for every ported module:
   `sensitive_patterns_extra` extension point.
 
 ### New modules
+
 - **config.py**: resolution order flag > env (`MEMORY_DREAM_*`,
   `CLAUDE_MEMORY_LIVE_ROOT`, `CLAUDE_MEMORY_MIRROR_ROOT` kept for compat) >
   optional JSON config at `<claude-config-dir>/memory-dream.json` > defaults.
@@ -192,24 +198,28 @@ Shared rules for every ported module:
   as a suggested-default with a one-line compatibility note.
 - `agents/scribe.md` from `memory-eval-scribe.md`: verbatim modulo naming;
   keep the deliberate single-dummy-tool (`Glob`) grant and its explanation.
+- Both agents declare an explicit minimal tool list (`Glob` only, unused by
+  their prompts); an empty list would grant every inherited tool. The parent
+  supplies all note bodies inline. `omitClaudeMd: true` excludes unrelated
+  host instructions from these bounded text-transformation tasks.
 - `templates/fidelity-prompt.md`: port; replace "stage 3.5/3.6" numbering with
   stage names ("fidelity verification", "repo grounding").
 
 ## Gate names (replaces R#/KTD#/AE# shorthand)
 
-| Old | Public name |
-|-----|-------------|
-| R3  | schema validation |
-| R6  | operator preview + item-by-item approval |
-| R7  | mirror freshness gate (optional mode) / snapshot backup (default) |
-| R8  | active-session warning |
-| R9/R10/R14 | mirror record + git-recoverable deletions (mirror mode only) |
-| R13 | source-changed-since-draft skip |
-| R15 | post-build audit dry-run |
-| R16 | inbound-wikilink retargeting |
-| R17 | consent trace (post-preview approval-turn verification) |
-| R18 | destination confinement |
-| R19 | zero-tool drafter |
+| Old           | Public name                                                                 |
+| ------------- | --------------------------------------------------------------------------- |
+| R3            | schema validation                                                           |
+| R6            | operator preview + item-by-item approval                                    |
+| R7            | mirror freshness gate (optional mode) / snapshot backup (default)           |
+| R8            | active-session warning                                                      |
+| R9/R10/R14    | mirror record + git-recoverable deletions (mirror mode only)                |
+| R13           | source-changed-since-draft skip                                             |
+| R15           | post-build audit dry-run                                                    |
+| R16           | inbound-wikilink retargeting                                                |
+| R17           | consent trace (post-preview approval-turn verification)                     |
+| R18           | destination confinement                                                     |
+| R19           | minimal-tool drafter                                                        |
 | findings gate | verification-coverage gate (`--findings` + `drafts_digest` content binding) |
 
 GLOSSARY note lives in ARCHITECTURE.md; the public docs use only the names.
@@ -222,6 +232,9 @@ list: personal filesystem paths, source-harness repo and project codenames,
 personal sync-script and workflow names, gate-number shorthand in gate context,
 and private PR/issue references. The authoritative pattern list lives in the
 script, next to the guard tests that pin it.
+The exact mirror-mode example values in the marked JSON blocks in README.md
+and TUNING.md are the sole documented-example exception; implementation and
+agent prompts remain generic.
 Personal dates on measured lessons are kept deliberately; they are provenance.
 
 ## Tests

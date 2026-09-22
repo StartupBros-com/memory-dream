@@ -3,8 +3,8 @@
 Two stages, both LLM-free. `plan` reads triage output, groups flagged notes into
 per-project near-duplicate clusters, drops any cluster with a sensitive member
 whole (routed to manual review), and caps clusters/notes per pass with overflow
-deferred. The orchestrating command dispatches one zero-tool subagent per cluster
-(the zero-tool drafter gate) and feeds the drafts to `build`, which schema-
+deferred. The orchestrating command dispatches one restricted subagent per cluster
+(the minimal-tool drafter gate) and feeds the drafts to `build`, which schema-
 validates each proposal (schema validation), confines every destination
 (destination confinement), retargets same-project inbound wikilinks to survivors
 (inbound-wikilink retargeting), pulls any proposal whose resulting file fails an
@@ -217,14 +217,13 @@ def run_plan(args: argparse.Namespace) -> int:
         "deferred": deferred,
         "manual_review": manual_review,
     }
-    # Pretty-printed on purpose: zero-tool drafters Read this file directly, and
-    # a single-line dump forces them into chunked grep reconstruction of their
-    # own cluster (measured during the authors' consolidation campaign: early
-    # drafters given a single-line dump burned 30+ tool calls each on that
-    # reconstruction).
+    # Pretty-printed for the parent to read before passing bodies inline to
+    # each restricted drafter. Earlier drafters given a single-line plan
+    # burned 30+ tool calls reconstructing their cluster (measured during
+    # the authors' consolidation campaign).
     config.emit_json(plan, getattr(args, "out_file", None), sort_keys=True, indent=1)
-    # Token shaping, not a behavior change: with shards, each drafter reads only
-    # its own cluster (~1/N of the plan) instead of every cluster's note bodies.
+    # With shards, the parent supplies each drafter only its own cluster
+    # (~1/N of the plan) instead of every cluster's note bodies.
     # Defaults under the session scratch dir so it is never left unset by
     # accident; pass --shards-dir explicitly to put it somewhere durable.
     shards_dir = Path(args.shards_dir).expanduser() if args.shards_dir else (config.scratch_dir() / "shards")

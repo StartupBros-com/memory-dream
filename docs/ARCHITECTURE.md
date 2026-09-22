@@ -3,8 +3,8 @@
 memory-dream turns Claude Code's auto-memory from a write-only log into
 something that can be consolidated on purpose. It does that by keeping almost
 everything deterministic and pushing the one step that genuinely needs
-judgment — drafting a consolidated note — into a subagent with no tools at
-all. This document describes the three layers, the apply-time gate stack in
+judgment — drafting a consolidated note — into a subagent with an explicit
+minimal tool list. This document describes the three layers, the apply-time gate stack in
 the order it actually runs, the build-time verification-coverage gate, mirror
 semantics, and recovery.
 
@@ -19,7 +19,7 @@ filename without `.md`.
 No LLM, no session, no model call. `memory-dream triage` scores every live
 note on structure only: supersession markers (`SUPERSEDED`/`CORRECTED`/
 `RESOLVED` as a case-sensitive line lead), body size, file-modification-time
-age, and inbound wikilink count. A note is *flagged* only on structural rot —
+age, and inbound wikilink count. A note is _flagged_ only on structural rot —
 a supersession marker or an oversized body; age and zero-inbound links are
 ranking boosts that never flag a note on their own, so a mature store full of
 old-but-fine notes doesn't manufacture proposals out of nothing. Output is
@@ -47,7 +47,7 @@ takes the plan plus a subagent's drafts and turns them into a **patch set**:
 it schema-validates every proposal, confines every destination path, retargets
 same-project inbound wikilinks to survivors, dry-run-audits every resulting
 file, and writes `manifest.json`, per-proposal diffs, `report.json`, and a
-`results/` directory of plain files — the patch-set directory is the *only*
+`results/` directory of plain files — the patch-set directory is the _only_
 surface allowed to hold memory bodies outside live memory itself.
 `memory-dream archive` does a separate, fully deterministic operation: moving
 settled index entries to a cold, never-auto-loaded file without touching any
@@ -61,12 +61,16 @@ or a write of already-approved content.
 ### Layer 3 — the model-driven pass (the `dream` command)
 
 Everything model-driven lives here, wrapped by the `/memory-dream:dream`
-command, and every model call in this layer is either zero-tool or read-only:
+command. Both plugin agents declare an explicit minimal tool list (`Glob`
+only); an empty list would grant every inherited tool. Glob can list paths
+but cannot read file bodies or mutate files, and the prompts require no tool
+use. Both agents set `omitClaudeMd: true` because their task context arrives
+inline. Repo grounding uses a separate read-only check:
 
-- **Drafting.** A zero-tool subagent (`memory-dream:drafter`) receives one
+- **Drafting.** A restricted subagent (`memory-dream:drafter`) receives one
   cluster's note bodies inline and returns one JSON object — a pure text
   transformation with no Read, Write, Bash, or Task access. Because note
-  bodies are untrusted input (see SECURITY.md), a drafter with no tools
+  bodies are untrusted input (see SECURITY.md), a drafter with no mutating tools
   cannot be steered by anything inside a note body into performing a write;
   the strongest guarantee is still downstream, since the drafter's JSON gets
   schema-validated, path-confined, sensitive-scanned, operator-reviewed, and
@@ -79,14 +83,14 @@ command, and every model call in this layer is either zero-tool or read-only:
 - **Repo grounding.** Any survivor asserting task state (pending work, an
   open PR or issue, a plan) gets a read-only check against the actual
   repository before build, because fidelity verification only checks a
-  draft against its *source notes* and inherits whatever staleness those
+  draft against its _source notes_ and inherits whatever staleness those
   sources already had.
 - **Checker-check.** Every edit applied after fidelity verification is
   itself new, unverified text; a per-file pass re-checks only edit-introduced
   defects (broken sentences, inverted references, description/body
   contradictions).
-- **Quality panel.** One zero-tool reviewer per lens reads only the *final*
-  files with fresh eyes — none of the earlier stages can see outside the
+- **Quality panel.** One restricted reviewer per lens receives only the _final_
+  file bodies inline with fresh eyes — none of the earlier stages can see outside the
   criteria they themselves authored.
 - **Benefit check.** A dozen small judge agents route real questions against
   a shadow-applied copy of the changes versus the live index, to measure
@@ -114,7 +118,7 @@ instead of hanging.
 
 **Gate 2 — consent trace.** In the default `trace` consent mode, apply
 recomputes the patch set's content-bound identifier and verifies that a real
-transcript turn, occurring *after* the preview was generated, exists in the
+transcript turn, occurring _after_ the preview was generated, exists in the
 operator's session and carries that identifier. This exists to catch an
 automated draft-then-apply sequence that never passed through a human at
 all: a fully scripted pipeline has no way to produce a post-preview human
@@ -174,11 +178,11 @@ them (see PROVENANCE.md).
 
 Each verification stage persists its verdict, incrementally, to one findings
 file keyed by cluster id: a status of `clean` or `fixed`, plus a
-`drafts_digest` — the sha256 of that cluster's *exact* proposals payload.
+`drafts_digest` — the sha256 of that cluster's _exact_ proposals payload.
 `build` refuses to assemble any drafted cluster that doesn't have a
 `clean`/`fixed` entry, **and** it independently recomputes the digest of the
 drafts payload it is about to assemble and refuses if that doesn't match the
-digest recorded in the findings entry. A status alone only proves that *some*
+digest recorded in the findings entry. A status alone only proves that _some_
 payload for that cluster id was checked at some point — not that it's the
 exact bytes about to be assembled. Content-binding closes that gap: an
 edited draft, or a stale findings entry left over from an earlier redraft of
@@ -194,8 +198,8 @@ someone ever restored live memory from the mirror. The apply manifest lists
 every applied deletion under `deleted`; removing those specific paths from
 the mirror is a separate, explicit, git-recoverable operation the operator
 performs after recording — never an implicit side effect of the record step
-itself. This is deliberate: the mirror's *current* tree should reflect the
-consolidation, while its *history* keeps the deleted content recoverable
+itself. This is deliberate: the mirror's _current_ tree should reflect the
+consolidation, while its _history_ keeps the deleted content recoverable
 regardless.
 
 In snapshot (default) mode there is no separate mirror tree to prune — the
@@ -226,17 +230,17 @@ here only so anyone cross-referencing an older discussion of this pipeline
 can map a code to the concept described above — every other document in
 this repository uses only the public names.
 
-| Shorthand | Public gate name |
-|---|---|
-| R3 | Schema validation |
-| R6 | Operator preview + item-by-item approval |
-| R7 | Mirror freshness gate (optional mode) / snapshot backup (default) |
-| R8 | Active-session warning |
-| R9 / R10 / R14 | Mirror record + git-recoverable deletions (mirror mode only) |
-| R13 | Source-changed-since-draft skip |
-| R15 | Post-build audit dry-run |
-| R16 | Inbound-wikilink retargeting |
-| R17 | Consent trace (post-preview approval-turn verification) |
-| R18 | Destination confinement |
-| R19 | Zero-tool drafter |
-| — | Verification-coverage gate (`--findings` + `drafts_digest` content binding) |
+| Shorthand      | Public gate name                                                            |
+| -------------- | --------------------------------------------------------------------------- |
+| R3             | Schema validation                                                           |
+| R6             | Operator preview + item-by-item approval                                    |
+| R7             | Mirror freshness gate (optional mode) / snapshot backup (default)           |
+| R8             | Active-session warning                                                      |
+| R9 / R10 / R14 | Mirror record + git-recoverable deletions (mirror mode only)                |
+| R13            | Source-changed-since-draft skip                                             |
+| R15            | Post-build audit dry-run                                                    |
+| R16            | Inbound-wikilink retargeting                                                |
+| R17            | Consent trace (post-preview approval-turn verification)                     |
+| R18            | Destination confinement                                                     |
+| R19            | Minimal-tool drafter                                                        |
+| —              | Verification-coverage gate (`--findings` + `drafts_digest` content binding) |

@@ -85,6 +85,9 @@ SENSITIVE_PATTERNS_EXTRA: list[str] = []
 # harnesses set this to their own sync command via the config file.
 MIRROR_PUSH_HINT = "sync your mirror, then retry"
 
+# Optional argv-style command that bypasses every built-in preview opener.
+PREVIEW_OPENER: str | None = None
+
 _ENV_PREFIX = "MEMORY_DREAM_"
 _FILE_CONFIG_LOADED = False
 
@@ -96,7 +99,10 @@ _FILE_CONFIG_LOADED = False
 _OVERRIDABLE = {
     name
     for name, value in list(globals().items())
-    if name.isupper() and not name.startswith("_") and not isinstance(value, bool) and isinstance(value, (int, float, str, list))
+    if name.isupper()
+    and not name.startswith("_")
+    and not isinstance(value, bool)
+    and isinstance(value, (int, float, str, list))
 }
 
 # Snapshot of the shipped default for every _OVERRIDABLE name, captured here
@@ -119,7 +125,9 @@ def default_live_root() -> Path:
     return Path(
         os.environ.get(
             _ENV_PREFIX + "LIVE_ROOT",
-            os.environ.get("CLAUDE_MEMORY_LIVE_ROOT", str(claude_config_dir() / "projects")),
+            os.environ.get(
+                "CLAUDE_MEMORY_LIVE_ROOT", str(claude_config_dir() / "projects")
+            ),
         )
     ).expanduser()
 
@@ -131,7 +139,9 @@ def default_mirror_root() -> Path | None:
     default derived a mirror from the script's own location and silently
     repointed when run from a copied checkout.
     """
-    raw = os.environ.get(_ENV_PREFIX + "MIRROR_ROOT", os.environ.get("CLAUDE_MEMORY_MIRROR_ROOT"))
+    raw = os.environ.get(
+        _ENV_PREFIX + "MIRROR_ROOT", os.environ.get("CLAUDE_MEMORY_MIRROR_ROOT")
+    )
     if raw:
         return Path(raw).expanduser()
     file_cfg = _file_config()
@@ -142,13 +152,19 @@ def default_mirror_root() -> Path | None:
 
 def pass_root() -> Path:
     return Path(
-        os.environ.get(_ENV_PREFIX + "PASS_ROOT", str(claude_config_dir() / "logs" / "memory-dream" / "passes"))
+        os.environ.get(
+            _ENV_PREFIX + "PASS_ROOT",
+            str(claude_config_dir() / "logs" / "memory-dream" / "passes"),
+        )
     ).expanduser()
 
 
 def eval_home() -> Path:
     return Path(
-        os.environ.get(_ENV_PREFIX + "EVAL_HOME", str(claude_config_dir() / "logs" / "memory-dream" / "eval"))
+        os.environ.get(
+            _ENV_PREFIX + "EVAL_HOME",
+            str(claude_config_dir() / "logs" / "memory-dream" / "eval"),
+        )
     ).expanduser()
 
 
@@ -178,7 +194,9 @@ def _file_config() -> dict:
     return data
 
 
-def _coerce_override_value(name: str, value: object, *, json_encoded: bool, source: str) -> object:
+def _coerce_override_value(
+    name: str, value: object, *, json_encoded: bool, source: str
+) -> object:
     """Coerce one override through the shipped value's type.
 
     Environment values are strings, so list overrides are JSON-decoded. File
@@ -189,7 +207,11 @@ def _coerce_override_value(name: str, value: object, *, json_encoded: bool, sour
     current = globals()[name]
     try:
         if isinstance(current, bool):  # not currently used; guard anyway
-            return str(value).lower() in ("1", "true", "yes") if json_encoded else bool(value)
+            return (
+                str(value).lower() in ("1", "true", "yes")
+                if json_encoded
+                else bool(value)
+            )
         if isinstance(current, list):
             return json.loads(value) if json_encoded else list(value)
         return type(current)(value)
@@ -199,6 +221,10 @@ def _coerce_override_value(name: str, value: object, *, json_encoded: bool, sour
 
 def _apply_env_overrides() -> None:
     """MEMORY_DREAM_<NAME> env vars override any threshold (env beats file)."""
+    global PREVIEW_OPENER
+    preview_opener = os.environ.get(_ENV_PREFIX + "PREVIEW_OPENER")
+    if preview_opener is not None:
+        PREVIEW_OPENER = preview_opener
     for name in _OVERRIDABLE:
         env_name = _ENV_PREFIX + name
         raw = os.environ.get(env_name)
@@ -221,9 +247,13 @@ def load_file_config() -> None:
     data = _file_config()
     unknown = []
     for key, value in data.items():
-        if key in ("mirror_root", "mirror_push_hint"):
+        if key in ("mirror_root", "mirror_push_hint", "preview_opener"):
             if key == "mirror_push_hint":
                 globals()["MIRROR_PUSH_HINT"] = str(value)
+            elif key == "preview_opener":
+                if value is not None and not isinstance(value, str):
+                    raise SystemExit("config key preview_opener: expected str or null")
+                globals()["PREVIEW_OPENER"] = value
             continue
         name = key.upper()
         if name in _OVERRIDABLE:
@@ -238,7 +268,7 @@ def load_file_config() -> None:
     if unknown:
         raise SystemExit(
             f"unknown config key(s) in {config_file_path()}: {', '.join(sorted(unknown))} "
-            f"(valid: mirror_root, mirror_push_hint, {', '.join(sorted(k.lower() for k in _OVERRIDABLE))})"
+            f"(valid: mirror_root, mirror_push_hint, preview_opener, {', '.join(sorted(k.lower() for k in _OVERRIDABLE))})"
         )
     _apply_env_overrides()
 
