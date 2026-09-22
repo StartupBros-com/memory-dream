@@ -24,8 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="memory-dream",
         description=__doc__.splitlines()[0],
     )
-    parser.add_argument("--version", action="version", version=f"memory-dream {__version__}")
-    subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
+    parser.add_argument(
+        "--version", action="version", version=f"memory-dream {__version__}"
+    )
+    subparsers = parser.add_subparsers(
+        dest="command", required=True, metavar="<command>"
+    )
 
     # Each module registers its own subcommands (audit/triage/fix, plan/build/
     # archive, trace/transcript-locate, apply/restore, eval). Imports live here
@@ -47,7 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_doctor_parser(subparsers) -> None:
-    p = subparsers.add_parser("doctor", help="preflight: report what works and what degrades here")
+    p = subparsers.add_parser(
+        "doctor", help="preflight: report what works and what degrades here"
+    )
     config.add_root_args(p)
     p.add_argument(
         "--strict",
@@ -58,17 +64,25 @@ def _add_doctor_parser(subparsers) -> None:
 
 
 def _add_scratch_parser(subparsers) -> None:
-    p = subparsers.add_parser("scratch", help="print the resolved session scratch directory")
+    p = subparsers.add_parser(
+        "scratch", help="print the resolved session scratch directory"
+    )
     p.set_defaults(func=lambda args: print(config.scratch_dir()) or 0)
 
 
 def _add_open_preview_parser(subparsers) -> None:
-    p = subparsers.add_parser("open-preview", help="open a patch set's preview.html in the operator's browser")
-    p.add_argument("--patch-set", required=True, help="patch-set directory holding preview.html")
+    p = subparsers.add_parser(
+        "open-preview", help="open a patch set's preview.html in the operator's browser"
+    )
+    p.add_argument(
+        "--patch-set", required=True, help="patch-set directory holding preview.html"
+    )
     p.set_defaults(func=_run_open_preview)
 
 
-def _detect_installed_claude_version(binary: str = "claude", timeout: float = 5.0) -> str | None:
+def _detect_installed_claude_version(
+    binary: str = "claude", timeout: float = 5.0
+) -> str | None:
     """Best-effort `<binary> --version` probe for the doctor "index cap"
     check. `binary` and `timeout` are parameters (not hardcoded) so tests can
     point this at a stub script instead of a real `claude` install.
@@ -94,7 +108,10 @@ def _detect_installed_claude_version(binary: str = "claude", timeout: float = 5.
         return None
     try:
         proc = subprocess.Popen(
-            [resolved, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            [resolved, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -130,9 +147,19 @@ def _index_cap_check(installed_version: str | None) -> tuple[str, bool, str, boo
     cap = f"{config.INDEX_LOAD_MAX_LINES} lines / {config.INDEX_LOAD_MAX_BYTES} bytes"
     base = f"{cap} — measured against Claude Code {measured_version} (docs/TUNING.md)"
     if installed_version is None:
-        return ("index cap", True, f"{base}; installed version: unverifiable — could not determine installed version", False)
+        return (
+            "index cap",
+            True,
+            f"{base}; installed version: unverifiable — could not determine installed version",
+            False,
+        )
     if installed_version == measured_version:
-        return ("index cap", True, f"{base}; installed {installed_version} matches", False)
+        return (
+            "index cap",
+            True,
+            f"{base}; installed {installed_version} matches",
+            False,
+        )
     return (
         "index cap",
         False,
@@ -141,7 +168,9 @@ def _index_cap_check(installed_version: str | None) -> tuple[str, bool, str, boo
     )
 
 
-def _compaction_canary_check(probe_result: tuple[str, str]) -> tuple[str, bool, str, bool]:
+def _compaction_canary_check(
+    probe_result: tuple[str, str],
+) -> tuple[str, bool, str, bool]:
     """Build the doctor "compaction canary" (label, ok, detail, fatal) tuple.
 
     `probe_result` is `transcript.compaction_canary`'s already-computed
@@ -159,7 +188,9 @@ def _compaction_canary_check(probe_result: tuple[str, str]) -> tuple[str, bool, 
     return ("compaction canary", status != "drift", detail, False)
 
 
-def _config_overrides_check(overrides: dict[str, tuple[object, object, str]]) -> tuple[str, bool, str, bool]:
+def _config_overrides_check(
+    overrides: dict[str, tuple[object, object, str]],
+) -> tuple[str, bool, str, bool]:
     """Build the doctor "config overrides" (label, ok, detail, fatal) tuple.
 
     `overrides` is `config.non_default_values()`'s already-computed
@@ -179,7 +210,9 @@ def _config_overrides_check(overrides: dict[str, tuple[object, object, str]]) ->
     return ("config overrides", True, "; ".join(parts), False)
 
 
-def _readiness_check(triage_summary: dict[str, Any] | None) -> tuple[str, bool, str, bool]:
+def _readiness_check(
+    triage_summary: dict[str, Any] | None,
+) -> tuple[str, bool, str, bool]:
     """Build the doctor "readiness" (label, ok, detail, fatal) tuple.
 
     `triage_summary` is the ``summary`` dict from an already-computed
@@ -260,7 +293,12 @@ def _patch_set_retention_check(stale: list[Path]) -> tuple[str, bool, str, bool]
     Pruning stays entirely operator-owned.
     """
     if not stale:
-        return ("patch-set retention", True, f"none older than {config.PATCH_SET_RETENTION_DAYS} days", False)
+        return (
+            "patch-set retention",
+            True,
+            f"none older than {config.PATCH_SET_RETENTION_DAYS} days",
+            False,
+        )
     total_bytes = sum(_dir_size_bytes(p) for p in stale)
     return (
         "patch-set retention",
@@ -296,7 +334,8 @@ def _wsl_windows_homes(users_root: Path = Path("/mnt/c/Users")) -> list[Path]:
     return [
         p
         for p in sorted(users_root.iterdir())
-        if p.is_dir() and p.name not in ("Public", "Default", "Default User", "All Users")
+        if p.is_dir()
+        and p.name not in ("Public", "Default", "Default User", "All Users")
     ]
 
 
@@ -313,12 +352,26 @@ def _preview_copy_retention_check(homes: list[Path]) -> tuple[str, bool, str, bo
     here.
     """
     if not homes:
-        return ("preview copy", True, "no Windows-home candidates to check (not on WSL, or none resolved)", False)
-    leftovers = [h / "memory-dream-preview.html" for h in homes if (h / "memory-dream-preview.html").is_file()]
+        return (
+            "preview copy",
+            True,
+            "no Windows-home candidates to check (not on WSL, or none resolved)",
+            False,
+        )
+    leftovers = [
+        h / "memory-dream-preview.html"
+        for h in homes
+        if (h / "memory-dream-preview.html").is_file()
+    ]
     if not leftovers:
         return ("preview copy", True, "none", False)
     paths = ", ".join(str(p) for p in leftovers)
-    return ("preview copy", False, f"leftover copy holding note bodies — delete after review: {paths}", False)
+    return (
+        "preview copy",
+        False,
+        f"leftover copy holding note bodies — delete after review: {paths}",
+        False,
+    )
 
 
 def _run_doctor(args) -> int:
@@ -341,23 +394,50 @@ def _run_doctor(args) -> int:
     checks.append(("python", ok, f"{sys.version.split()[0]} (need >= 3.10)", True))
 
     live = Path(args.live_root).expanduser()
-    projects = [p for p in live.iterdir() if (p / "memory").is_dir()] if live.is_dir() else []
+    projects = (
+        [p for p in live.iterdir() if (p / "memory").is_dir()] if live.is_dir() else []
+    )
     checks.append(
-        ("live root", live.is_dir(), f"{live} — {len(projects)} project(s) with memory" if live.is_dir() else f"{live} missing", True)
+        (
+            "live root",
+            live.is_dir(),
+            f"{live} — {len(projects)} project(s) with memory"
+            if live.is_dir()
+            else f"{live} missing",
+            True,
+        )
     )
 
     if args.mirror_root:
         mirror = Path(args.mirror_root).expanduser()
-        checks.append(("mirror mode", mirror.is_dir(), f"{mirror}" if mirror.is_dir() else f"{mirror} missing", False))
+        checks.append(
+            (
+                "mirror mode",
+                mirror.is_dir(),
+                f"{mirror}" if mirror.is_dir() else f"{mirror} missing",
+                False,
+            )
+        )
     else:
-        checks.append(("snapshot mode", True, "no mirror configured; apply snapshots into the patch set (restore via `memory-dream restore`)", False))
+        checks.append(
+            (
+                "snapshot mode",
+                True,
+                "no mirror configured; apply snapshots into the patch set (restore via `memory-dream restore`)",
+                False,
+            )
+        )
 
     try:
         tdir = transcript.transcripts_dir_for(Path.cwd())
         found = tdir.is_dir()
-        detail = f"{tdir}" if found else (
-            f"{tdir} not found — consent trace unavailable from this cwd "
-            "(only needed for `apply`; triage/plan/build/eval work without it)"
+        detail = (
+            f"{tdir}"
+            if found
+            else (
+                f"{tdir} not found — consent trace unavailable from this cwd "
+                "(only needed for `apply`; triage/plan/build/eval work without it)"
+            )
         )
         probe = transcript.schema_probe(tdir) if found else None
         if probe is not None:
@@ -366,7 +446,11 @@ def _run_doctor(args) -> int:
     except Exception as exc:  # pragma: no cover - environment specific
         checks.append(("consent trace", False, str(exc), False))
 
-    checks.append(_compaction_canary_check(transcript.compaction_canary(transcript.transcripts_dir_for(Path.cwd()))))
+    checks.append(
+        _compaction_canary_check(
+            transcript.compaction_canary(transcript.transcripts_dir_for(Path.cwd()))
+        )
+    )
 
     from memory_dream import compat
 
@@ -376,21 +460,42 @@ def _run_doctor(args) -> int:
     try:
         with compat.FileLock(lock_probe):
             pass
-        checks.append(("single-flight lock", True, f"{os.name} lock backend works", True))
+        checks.append(
+            ("single-flight lock", True, f"{os.name} lock backend works", True)
+        )
     except Exception as exc:  # pragma: no cover - environment specific
         checks.append(("single-flight lock", False, str(exc), True))
 
     orphans = list(live.glob("*/memory/*.dream-tmp")) if live.is_dir() else []
     checks.append(
-        ("staging leftovers", not orphans, f"{len(orphans)} orphaned *.dream-tmp file(s) — crash leftovers, review and remove" if orphans else "none", False)
+        (
+            "staging leftovers",
+            not orphans,
+            f"{len(orphans)} orphaned *.dream-tmp file(s) — crash leftovers, review and remove"
+            if orphans
+            else "none",
+            False,
+        )
     )
 
-    checks.append(_patch_set_retention_check(_stale_patch_sets(config.pass_root(), config.PATCH_SET_RETENTION_DAYS)))
+    checks.append(
+        _patch_set_retention_check(
+            _stale_patch_sets(config.pass_root(), config.PATCH_SET_RETENTION_DAYS)
+        )
+    )
 
     checks.append(_preview_copy_retention_check(_wsl_windows_homes()))
 
     for tool in ("git", "gh"):
-        checks.append((f"{tool} (optional)", True, shutil.which(tool) or "not found — repo-grounding checks degrade to note-only", False))
+        checks.append(
+            (
+                f"{tool} (optional)",
+                True,
+                shutil.which(tool)
+                or "not found — repo-grounding checks degrade to note-only",
+                False,
+            )
+        )
 
     checks.append(_index_cap_check(_detect_installed_claude_version()))
 
@@ -403,7 +508,11 @@ def _run_doctor(args) -> int:
     # missing or empty live root, so it is always safe to call here.
     mirror_root = Path(args.mirror_root).expanduser() if args.mirror_root else None
     triage_result = audit.compute_triage(
-        live, mirror_root, dt.date.today(), config.SUPPRESS_APPLIED_DAYS, config.SUPPRESS_REJECTED_DAYS
+        live,
+        mirror_root,
+        dt.date.today(),
+        config.SUPPRESS_APPLIED_DAYS,
+        config.SUPPRESS_REJECTED_DAYS,
     )
     checks.append(_readiness_check(triage_result["summary"]))
 
@@ -434,7 +543,8 @@ def _run_doctor(args) -> int:
     # further exclusion is needed to keep them out of this list.
     NON_DRIFT_ADVISORY_LABELS = {"consent trace"}
     drift = [
-        label for label, ok, _detail, fatal in checks
+        label
+        for label, ok, _detail, fatal in checks
         if not ok and not fatal and label not in NON_DRIFT_ADVISORY_LABELS
     ]
     if drift:
@@ -446,13 +556,16 @@ def _run_doctor(args) -> int:
 
 
 def _run_open_preview(args) -> int:
-    """Best-effort platform opener, including the WSL copy-to-Windows dance.
+    """Run the configured opener or use a best-effort platform opener.
 
-    The Windows-home copy holds memory bodies; the operator is told to delete
-    it after review. Never fails the pipeline: a preview that does not open is
-    reported, and the skill falls back to inline diffs.
+    The built-in WSL path copies preview.html, which holds full memory bodies,
+    into the Windows profile. A harness with its own opener must be able to
+    bypass that copy entirely. A configured opener runs without a shell, is
+    waited for, and supplies the exit code; it never falls back to a built-in.
+    Built-in opener failures are reported so the skill can use inline diffs.
     """
     import os
+    import shlex
     import shutil
     import subprocess
 
@@ -460,6 +573,16 @@ def _run_open_preview(args) -> int:
     if not preview.is_file():
         print(f"no preview.html under {args.patch_set}", file=sys.stderr)
         return 1
+
+    if config.PREVIEW_OPENER is not None:
+        try:
+            command = shlex.split(config.PREVIEW_OPENER)
+            if not command:
+                raise ValueError("command must not be empty")
+            return subprocess.run([*command, str(preview)], check=False).returncode
+        except (OSError, ValueError) as exc:
+            print(f"could not run preview_opener: {exc}", file=sys.stderr)
+            return 1
 
     def _try(cmd: list[str]) -> bool:
         try:
@@ -478,7 +601,10 @@ def _run_open_preview(args) -> int:
         username = None
         try:
             out = subprocess.run(
-                ["cmd.exe", "/c", "echo %USERNAME%"], capture_output=True, text=True, timeout=15
+                ["cmd.exe", "/c", "echo %USERNAME%"],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             username = out.stdout.strip() or None
         except Exception:
@@ -492,9 +618,20 @@ def _run_open_preview(args) -> int:
                 shutil.copy(preview, target)
             except OSError:
                 continue
-            win_path = subprocess.run(["wslpath", "-w", str(target)], capture_output=True, text=True).stdout.strip()
-            if _try(["powershell.exe", "-NoProfile", "-Command", f"Start-Process '{win_path}'"]):
-                print(f"opened in browser (copy at {target} — it holds note bodies; delete after review)")
+            win_path = subprocess.run(
+                ["wslpath", "-w", str(target)], capture_output=True, text=True
+            ).stdout.strip()
+            if _try(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-Command",
+                    f"Start-Process '{win_path}'",
+                ]
+            ):
+                print(
+                    f"opened in browser (copy at {target} — it holds note bodies; delete after review)"
+                )
                 return 0
 
     for opener in (["wslview"], ["open"], ["xdg-open"]):

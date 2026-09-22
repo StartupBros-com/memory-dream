@@ -82,10 +82,11 @@ def run_sample(args: argparse.Namespace) -> int:
     recently modified substantial notes (recency is the best proxy for what a
     future session will actually ask about).
 
-    The JSON sample goes to stdout; a per-project coverage summary (how many
-    notes were kept, and how many were dropped for being under ``--min-bytes``
-    or sensitive) goes to stderr, so a project silently contributing zero
-    notes is always visible rather than looking like it has no memory.
+    The JSON sample goes to stdout, or to ``--out-file`` when supplied; a
+    per-project coverage summary (how many notes were kept, and how many were
+    dropped for being under ``--min-bytes`` or sensitive) goes to stderr, so a
+    project silently contributing zero notes is always visible rather than
+    looking like it has no memory.
     """
     live_root = Path(args.live_root).expanduser()
     live = AUDIT.project_dirs(live_root, live=True)
@@ -94,7 +95,15 @@ def run_sample(args: argparse.Namespace) -> int:
     for project in sorted(live):
         memory_dir = live[project]
         if memory_dir.is_symlink() or memory_dir.parent.is_symlink():
-            coverage.append({"project": project, "kept": 0, "too_small": 0, "sensitive": 0, "skipped": "symlinked"})
+            coverage.append(
+                {
+                    "project": project,
+                    "kept": 0,
+                    "too_small": 0,
+                    "sensitive": 0,
+                    "skipped": "symlinked",
+                }
+            )
             continue
         records = AUDIT.scan_project_notes(memory_dir)
         ranked = sorted(records.items(), key=lambda item: -item[1]["mtime"])
@@ -113,7 +122,12 @@ def run_sample(args: argparse.Namespace) -> int:
                 continue
             body = record["body"]
             if len(body.encode("utf-8")) > BODY_SAMPLE_CAP:
-                body = body.encode("utf-8")[:BODY_SAMPLE_CAP].decode("utf-8", errors="ignore") + "\n[truncated]"
+                body = (
+                    body.encode("utf-8")[:BODY_SAMPLE_CAP].decode(
+                        "utf-8", errors="ignore"
+                    )
+                    + "\n[truncated]"
+                )
             notes.append(
                 {
                     "project": project,
@@ -124,8 +138,19 @@ def run_sample(args: argparse.Namespace) -> int:
                 }
             )
             kept += 1
-        coverage.append({"project": project, "kept": kept, "too_small": too_small, "sensitive": sensitive})
-    print(json.dumps({"schema_version": SUITE_SCHEMA_VERSION, "notes": notes}, sort_keys=True))
+        coverage.append(
+            {
+                "project": project,
+                "kept": kept,
+                "too_small": too_small,
+                "sensitive": sensitive,
+            }
+        )
+    config.emit_json(
+        {"schema_version": SUITE_SCHEMA_VERSION, "notes": notes},
+        getattr(args, "out_file", None),
+        sort_keys=True,
+    )
     # Coverage summary to stderr (never pollutes the machine-readable stdout).
     total_kept = sum(c["kept"] for c in coverage)
     print(
@@ -136,11 +161,15 @@ def run_sample(args: argparse.Namespace) -> int:
     for c in coverage:
         if c["kept"] == 0:
             reason = c.get("skipped") or (
-                f"all under --min-bytes ({c['too_small']} too small)" if c["too_small"] and not c["sensitive"]
-                else f"{c['too_small']} too small, {c['sensitive']} sensitive" if (c["too_small"] or c["sensitive"])
+                f"all under --min-bytes ({c['too_small']} too small)"
+                if c["too_small"] and not c["sensitive"]
+                else f"{c['too_small']} too small, {c['sensitive']} sensitive"
+                if (c["too_small"] or c["sensitive"])
                 else "no notes"
             )
-            print(f"  WARNING {c['project']}: 0 notes sampled — {reason}", file=sys.stderr)
+            print(
+                f"  WARNING {c['project']}: 0 notes sampled — {reason}", file=sys.stderr
+            )
         elif c["too_small"] or c["sensitive"]:
             print(
                 f"  {c['project']}: {c['kept']} kept, {c['too_small']} under --min-bytes, {c['sensitive']} sensitive",
@@ -152,7 +181,9 @@ def run_sample(args: argparse.Namespace) -> int:
 # --- freeze ------------------------------------------------------------------
 
 
-def validate_question(entry: dict[str, Any], memory_dirs: dict[str, Path]) -> str | None:
+def validate_question(
+    entry: dict[str, Any], memory_dirs: dict[str, Path]
+) -> str | None:
     """Reject a drafted question unless it is structurally sound AND its answer
     snippet verifiably appears in the claimed source note (anti-fabrication)."""
     if not isinstance(entry, dict):
@@ -173,7 +204,9 @@ def validate_question(entry: dict[str, Any], memory_dirs: dict[str, Path]) -> st
     snippet = entry.get("answer_snippet")
     if not isinstance(source, str) or not source.strip():
         return "missing source"
-    if not isinstance(snippet, str) or not (SNIPPET_MIN_CHARS <= len(snippet.strip()) <= SNIPPET_MAX_CHARS):
+    if not isinstance(snippet, str) or not (
+        SNIPPET_MIN_CHARS <= len(snippet.strip()) <= SNIPPET_MAX_CHARS
+    ):
         return f"answer_snippet must be {SNIPPET_MIN_CHARS}-{SNIPPET_MAX_CHARS} chars"
     note_path = AUDIT.confined_path(memory_dir, source)
     if note_path is None or not note_path.is_file():
@@ -188,11 +221,17 @@ def run_freeze(args: argparse.Namespace) -> int:
     live_root = Path(args.live_root).expanduser()
     live = AUDIT.project_dirs(live_root, live=True)
     try:
-        drafted = json.loads(Path(args.questions).expanduser().read_text(encoding="utf-8"))
+        drafted = json.loads(
+            Path(args.questions).expanduser().read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError) as error:
-        print(f"memory-dream eval freeze: cannot read questions: {error}", file=sys.stderr)
+        print(
+            f"memory-dream eval freeze: cannot read questions: {error}", file=sys.stderr
+        )
         return 2
-    entries = drafted.get("questions", drafted) if isinstance(drafted, dict) else drafted
+    entries = (
+        drafted.get("questions", drafted) if isinstance(drafted, dict) else drafted
+    )
     if not isinstance(entries, list):
         print("memory-dream eval freeze: questions must be a list", file=sys.stderr)
         return 2
@@ -204,7 +243,9 @@ def run_freeze(args: argparse.Namespace) -> int:
         if error:
             dropped.append({"question": str(entry)[:120], "reason": error})
             continue
-        qid = question_id(entry["project"], entry["question"], entry.get("answer_snippet", ""))
+        qid = question_id(
+            entry["project"], entry["question"], entry.get("answer_snippet", "")
+        )
         if qid in seen:
             dropped.append({"question": entry["question"][:120], "reason": "duplicate"})
             continue
@@ -230,7 +271,9 @@ def run_freeze(args: argparse.Namespace) -> int:
     }
     out = Path(args.out).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
-    AUDIT.atomic_write(out, (json.dumps(suite, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    AUDIT.atomic_write(
+        out, (json.dumps(suite, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    )
     print(
         f"memory-dream eval freeze: froze {len(questions)} question(s) "
         f"({len(dropped)} dropped), suite {suite['suite_id']} -> {out}"
@@ -260,13 +303,20 @@ def run_routing_input(args: argparse.Namespace) -> int:
         batches.append(
             {
                 "project": project,
-                "index_text": AUDIT.loaded_index_text(raw_index_text(live.get(project))),
+                "index_text": AUDIT.loaded_index_text(
+                    raw_index_text(live.get(project))
+                ),
                 "questions": [
-                    {"id": q["id"], "question": q["question"]} for q in by_project[project]
+                    {"id": q["id"], "question": q["question"]}
+                    for q in by_project[project]
                 ],
             }
         )
-    print(json.dumps({"suite_id": suite["suite_id"], "batches": batches}, sort_keys=True))
+    config.emit_json(
+        {"suite_id": suite["suite_id"], "batches": batches},
+        getattr(args, "out_file", None),
+        sort_keys=True,
+    )
     return 0
 
 
@@ -302,10 +352,16 @@ def score_question(
     }
     answerable = question["archetype"] != "unanswerable"
     if answerable and not anchored:
-        record.update(score=0.0, verdict="broken", reason="answer content no longer exists in the corpus")
+        record.update(
+            score=0.0,
+            verdict="broken",
+            reason="answer content no longer exists in the corpus",
+        )
         return record
     if route is None:
-        record.update(score=0.0, verdict="unjudged", reason="no route returned for this question")
+        record.update(
+            score=0.0, verdict="unjudged", reason="no route returned for this question"
+        )
         return record
     routed_raw = route.get("routed")
     abstained_raw = route.get("abstained")
@@ -314,7 +370,11 @@ def score_question(
         or not isinstance(routed_raw, list)
         or not all(isinstance(rel, str) for rel in routed_raw)
     ):
-        record.update(score=0.0, verdict="invalid", reason="malformed route (routed must be list[str], abstained a real bool)")
+        record.update(
+            score=0.0,
+            verdict="invalid",
+            reason="malformed route (routed must be list[str], abstained a real bool)",
+        )
         return record
     routed = list(dict.fromkeys(routed_raw))
     record["routed"] = routed
@@ -322,7 +382,11 @@ def score_question(
     if outside:
         # A real session routes from loaded index entries; credit for anything else
         # (hallucinated or unindexed-but-existing paths) would inflate the metric.
-        record.update(score=0.0, verdict="invalid", reason=f"routed outside the loaded index: {', '.join(sorted(outside))}")
+        record.update(
+            score=0.0,
+            verdict="invalid",
+            reason=f"routed outside the loaded index: {', '.join(sorted(outside))}",
+        )
         return record
     abstained = abstained_raw
 
@@ -340,26 +404,40 @@ def score_question(
 
     if not answerable:
         if abstained and not routed:
-            record.update(score=1.0, verdict="correct", reason="abstained on unanswerable")
+            record.update(
+                score=1.0, verdict="correct", reason="abstained on unanswerable"
+            )
         else:
-            record.update(score=0.0, verdict="wrong", reason="routed on an unanswerable question")
+            record.update(
+                score=0.0, verdict="wrong", reason="routed on an unanswerable question"
+            )
         return record
 
     if abstained or not routed:
-        record.update(score=0.0, verdict="miss", reason="abstained on an answerable question")
+        record.update(
+            score=0.0, verdict="miss", reason="abstained on an answerable question"
+        )
         return record
     snippet = normalize(question["answer_snippet"])
     hits = [rel for rel in routed if snippet in normalize(body_of(rel))]
     if not hits:
-        record.update(score=0.0, verdict="miss", reason="routed note(s) do not contain the answer")
+        record.update(
+            score=0.0, verdict="miss", reason="routed note(s) do not contain the answer"
+        )
         return record
     # multihop legitimately opens the linked pair; only opens beyond the hop set
     # are extraneous (Letta leaderboard penalty). Everything else expects one note.
     allowed_opens = 2 if question["archetype"] == "multihop" else 1
     if len(routed) <= allowed_opens:
-        record.update(score=1.0, verdict="correct", reason="routed within the expected note set")
+        record.update(
+            score=1.0, verdict="correct", reason="routed within the expected note set"
+        )
     else:
-        record.update(score=0.5, verdict="loose", reason=f"answer found but {len(routed)} notes routed")
+        record.update(
+            score=0.5,
+            verdict="loose",
+            reason=f"answer found but {len(routed)} notes routed",
+        )
     # Staleness check: routing landed on a note carrying supersession markers.
     stale = [rel for rel in hits if AUDIT.SUPERSESSION_RE.search(body_of(rel))]
     if stale:
@@ -426,22 +504,31 @@ def run_score(args: argparse.Namespace) -> int:
         if project not in norm_bodies:
             norm_bodies[project] = (
                 [
-                    normalize((memory_dir / rel).read_text(encoding="utf-8", errors="replace"))
+                    normalize(
+                        (memory_dir / rel).read_text(encoding="utf-8", errors="replace")
+                    )
                     for rel in AUDIT.scan_project_notes(memory_dir)
                 ]
                 if memory_dir is not None
                 else []
             )
-            targets, _escaping = AUDIT.index_targets(AUDIT.loaded_index_text(raw_index_text(memory_dir)))
+            targets, _escaping = AUDIT.index_targets(
+                AUDIT.loaded_index_text(raw_index_text(memory_dir))
+            )
             visible_by_project[project] = targets - {"MEMORY.md"}
         anchored = question["archetype"] == "unanswerable" or any(
-            normalize(question["answer_snippet"]) in body for body in norm_bodies[project]
+            normalize(question["answer_snippet"]) in body
+            for body in norm_bodies[project]
         )
         cache = body_caches.setdefault(project, {})
         candidates = [
             score_question(
-                question, pass_routes.get(question["id"]), memory_dir, cache,
-                visible_by_project[project], anchored,
+                question,
+                pass_routes.get(question["id"]),
+                memory_dir,
+                cache,
+                visible_by_project[project],
+                anchored,
             )
             for pass_routes in passes
         ]
@@ -466,8 +553,16 @@ def run_score(args: argparse.Namespace) -> int:
     by_archetype: dict[str, list[float]] = {}
     for record in scoreable:
         by_archetype.setdefault(record["archetype"], []).append(record["score"])
-    accuracy = round(100 * sum(r["score"] for r in answerable) / len(answerable), 1) if answerable else 0.0
-    abstention = round(100 * sum(r["score"] for r in negatives) / len(negatives), 1) if negatives else None
+    accuracy = (
+        round(100 * sum(r["score"] for r in answerable) / len(answerable), 1)
+        if answerable
+        else 0.0
+    )
+    abstention = (
+        round(100 * sum(r["score"] for r in negatives) / len(negatives), 1)
+        if negatives
+        else None
+    )
     index_tokens = 0
     for project in sorted({q["project"] for q in suite["questions"]}):
         loaded = AUDIT.loaded_index_text(raw_index_text(live.get(project)))
@@ -481,18 +576,21 @@ def run_score(args: argparse.Namespace) -> int:
         "accuracy": accuracy,
         "abstention": abstention,
         "by_archetype": {
-            key: round(100 * sum(values) / len(values), 1) for key, values in sorted(by_archetype.items())
+            key: round(100 * sum(values) / len(values), 1)
+            for key, values in sorted(by_archetype.items())
         },
         "questions": len(records),
         "answerable_scored": len(answerable),
         "broken": len(broken),
         "stale_routes": sum(1 for r in scoreable if r.get("stale_route")),
         "unjudged": sum(1 for r in scoreable if r["verdict"] == "unjudged"),
-        "invalid": sum(1 for r in scoreable if r["verdict"] == "invalid") + duplicate_routes,
+        "invalid": sum(1 for r in scoreable if r["verdict"] == "invalid")
+        + duplicate_routes,
         "index_tokens": index_tokens,
         "passes": len(passes),
         "pass_accuracies": [
-            round(100 * sum(scores) / len(scores), 1) if scores else 0.0 for scores in per_pass_scores
+            round(100 * sum(scores) / len(scores), 1) if scores else 0.0
+            for scores in per_pass_scores
         ],
         "records": sorted(records, key=lambda r: (r["project"], r["id"])),
     }
@@ -504,10 +602,16 @@ def run_score(args: argparse.Namespace) -> int:
         try:
             baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            print(f"memory-dream eval score: cannot read baseline run {args.baseline}: {error}", file=sys.stderr)
+            print(
+                f"memory-dream eval score: cannot read baseline run {args.baseline}: {error}",
+                file=sys.stderr,
+            )
             return 2
         if baseline.get("suite_id") != run["suite_id"]:
-            print("memory-dream eval score: baseline is a different suite; refusing the paired comparison", file=sys.stderr)
+            print(
+                "memory-dream eval score: baseline is a different suite; refusing the paired comparison",
+                file=sys.stderr,
+            )
             return 2
         base_records = {r["id"]: r for r in baseline.get("records", [])}
         ups, downs = [], []
@@ -535,7 +639,12 @@ def run_score(args: argparse.Namespace) -> int:
             "decayed_excluded": decayed_excluded,
             "net": round(net, 1),
             "flips": [
-                {"id": r["id"], "project": r["project"], "direction": direction, "verdict": r["verdict"]}
+                {
+                    "id": r["id"],
+                    "project": r["project"],
+                    "direction": direction,
+                    "verdict": r["verdict"],
+                }
                 for direction, group in (("up", ups), ("down", downs))
                 for r in group[:20]
             ],
@@ -543,7 +652,10 @@ def run_score(args: argparse.Namespace) -> int:
 
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
-    AUDIT.atomic_write(out_dir / f"run-{args.run_id}.json", (json.dumps(run, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    AUDIT.atomic_write(
+        out_dir / f"run-{args.run_id}.json",
+        (json.dumps(run, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
 
     lines = [
         f"memory-dream eval score: suite {run['suite_id']} run {args.run_id}: "
@@ -552,7 +664,9 @@ def run_score(args: argparse.Namespace) -> int:
         f"{run['stale_routes']} stale-routed) index~{index_tokens} tokens"
     ]
     if len(passes) > 1:
-        lines.append(f"  passes: {len(passes)}, per-pass accuracy {run['pass_accuracies']} (median-scored)")
+        lines.append(
+            f"  passes: {len(passes)}, per-pass accuracy {run['pass_accuracies']} (median-scored)"
+        )
     for archetype, value in run["by_archetype"].items():
         lines.append(f"  {archetype}: {value}")
     if run.get("paired"):
@@ -579,7 +693,11 @@ def run_score(args: argparse.Namespace) -> int:
             previous = candidate
     if previous:
         delta = round(accuracy - previous["accuracy"], 1)
-        noise = " (within the +/-2pt judge-noise band, treat as flat)" if abs(delta) < NOISE_BAND_POINTS else ""
+        noise = (
+            " (within the +/-2pt judge-noise band, treat as flat)"
+            if abs(delta) < NOISE_BAND_POINTS
+            else ""
+        )
         lines.append(
             f"delta vs run {previous.get('run_id')}: {delta:+} points{noise}; "
             f"index {index_tokens - previous.get('index_tokens', 0):+} tokens"
@@ -610,7 +728,9 @@ def run_discriminability(args: argparse.Namespace) -> int:
             continue
         records = AUDIT.scan_project_notes(memory_dir)
         described = sorted(
-            (rel, record["description"]) for rel, record in records.items() if record.get("description")
+            (rel, record["description"])
+            for rel, record in records.items()
+            if record.get("description")
         )
         if len(described) < 2:
             continue
@@ -711,7 +831,8 @@ def run_export_paired(args: argparse.Namespace) -> int:
         ("paired-candidate.json", cand_scores),
     ):
         AUDIT.atomic_write(
-            out_dir / name, (json.dumps(scores, indent=2, sort_keys=True) + "\n").encode("utf-8")
+            out_dir / name,
+            (json.dumps(scores, indent=2, sort_keys=True) + "\n").encode("utf-8"),
         )
     print(
         f"export-paired: {len(base_scores)} pairs -> {out_dir} "
@@ -724,7 +845,9 @@ def run_export_paired(args: argparse.Namespace) -> int:
             "export-paired: NOTE fewer than 3 pairs; paired-comparison tools will refuse",
             file=sys.stderr,
         )
-    print(json.dumps({"pairs": len(base_scores), "out_dir": str(out_dir)}, sort_keys=True))
+    print(
+        json.dumps({"pairs": len(base_scores), "out_dir": str(out_dir)}, sort_keys=True)
+    )
     return 0
 
 
@@ -741,21 +864,32 @@ def add_parsers(subparsers) -> None:
         default=str(config.default_live_root()),
         help="root of per-project live memory (default: <claude-config-dir>/projects)",
     )
-    eval_sub = eval_parser.add_subparsers(dest="eval_command", required=True, metavar="<eval-command>")
+    eval_sub = eval_parser.add_subparsers(
+        dest="eval_command", required=True, metavar="<eval-command>"
+    )
 
-    sample = eval_sub.add_parser("sample", help="emit note bodies for the question writers")
+    sample = eval_sub.add_parser(
+        "sample", help="emit note bodies for the question writers"
+    )
     sample.add_argument(
-        "--per-project", type=int, default=8,
+        "--per-project",
+        type=int,
+        default=8,
         help="max notes sampled per project, most-recent first (default: 8)",
     )
     sample.add_argument(
-        "--min-bytes", type=int, default=500,
+        "--min-bytes",
+        type=int,
+        default=500,
         help="skip notes whose body is under this many bytes; a per-project drop "
         "count is reported on stderr (default: 500, use 0 to include tiny notes)",
     )
+    config.add_out_file_arg(sample, "note sample")
     sample.set_defaults(func=run_sample)
 
-    freeze = eval_sub.add_parser("freeze", help="validate drafted questions and freeze the suite")
+    freeze = eval_sub.add_parser(
+        "freeze", help="validate drafted questions and freeze the suite"
+    )
     freeze.add_argument("--questions", required=True)
     freeze.add_argument("--out", default=str(config.eval_home() / "suite.json"))
     freeze.set_defaults(func=run_freeze)
@@ -764,20 +898,34 @@ def add_parsers(subparsers) -> None:
         "routing-input", help="emit per-project judge inputs (index text + questions)"
     )
     routing.add_argument("--suite", default=str(config.eval_home() / "suite.json"))
+    config.add_out_file_arg(routing, "routing input")
     routing.set_defaults(func=run_routing_input)
 
-    score = eval_sub.add_parser("score", help="score judge routes against the frozen suite")
+    score = eval_sub.add_parser(
+        "score", help="score judge routes against the frozen suite"
+    )
     score.add_argument("--suite", default=str(config.eval_home() / "suite.json"))
     score.add_argument(
-        "--routes", required=True, action="append",
+        "--routes",
+        required=True,
+        action="append",
         help="judge routes JSON; repeat for independent passes (per-question median)",
     )
-    score.add_argument("--run-id", required=True, help="caller-supplied run tag (e.g. a timestamp or pre/post label)")
     score.add_argument(
-        "--fingerprint", default="",
+        "--run-id",
+        required=True,
+        help="caller-supplied run tag (e.g. a timestamp or pre/post label)",
+    )
+    score.add_argument(
+        "--fingerprint",
+        default="",
         help="harness fingerprint (judge model + prompt version); deltas only compare runs sharing it",
     )
-    score.add_argument("--baseline", default="", help="run id for the paired-flip comparison (primary readout)")
+    score.add_argument(
+        "--baseline",
+        default="",
+        help="run id for the paired-flip comparison (primary readout)",
+    )
     score.add_argument("--out-dir", default=str(config.eval_home() / "runs"))
     score.set_defaults(func=run_score)
 
@@ -786,16 +934,21 @@ def add_parsers(subparsers) -> None:
         help="export two scored runs as flat {question_id: score} files for external paired-comparison tools",
     )
     export.add_argument(
-        "--baseline", required=True,
+        "--baseline",
+        required=True,
         help="baseline run: a path to a run-<id>.json or a bare run id resolved in --runs-dir",
     )
-    export.add_argument("--candidate", required=True, help="candidate run: a path or bare run id")
     export.add_argument(
-        "--runs-dir", default=str(config.eval_home() / "runs"),
+        "--candidate", required=True, help="candidate run: a path or bare run id"
+    )
+    export.add_argument(
+        "--runs-dir",
+        default=str(config.eval_home() / "runs"),
         help="where bare run ids resolve (default: <eval-home>/runs)",
     )
     export.add_argument(
-        "--out-dir", default=str(config.eval_home() / "paired"),
+        "--out-dir",
+        default=str(config.eval_home() / "paired"),
         help="where paired-baseline.json and paired-candidate.json are written",
     )
     export.set_defaults(func=run_export_paired)
@@ -805,5 +958,7 @@ def add_parsers(subparsers) -> None:
         help="deterministic pairwise description-similarity report (no judge, no noise)",
     )
     disc.add_argument("--project", default="", help="optional project filter")
-    disc.add_argument("--top", type=int, default=3, help="worst pairs to show per project")
+    disc.add_argument(
+        "--top", type=int, default=3, help="worst pairs to show per project"
+    )
     disc.set_defaults(func=run_discriminability)
