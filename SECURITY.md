@@ -22,11 +22,14 @@ stating explicitly rather than leaving implicit:
 That second assumption is the actual threat this pipeline defends against,
 and it's why the architecture looks the way it does:
 
-- **The drafter has no tools.** The subagent that turns note bodies into a
-  consolidation proposal cannot Read, Write, run Bash, or dispatch another
-  agent. Whatever a note body says, the worst it can do to a zero-tool
-  subagent is produce a bad *text* output — never a write, a shell command,
-  or a further dispatch.
+- **Both agents have an explicit minimal tool list.** The drafter and
+  scribe declare only `Glob`; an empty list would grant every inherited
+  tool. Glob can list matching paths but cannot read file bodies, write
+  files, run commands, or dispatch another agent. Their prompts require no
+  tool use and supply all task content inline. `omitClaudeMd: true` keeps
+  unrelated host CLAUDE.md instructions out of their context. A note-body
+  injection can still produce bad text or induce a path listing, so the
+  downstream output checks remain essential.
 - **The drafter's output is schema-validated**, not trusted as well-formed
   JSON on faith — a malformed or unexpected shape is a build failure, not a
   best-effort parse.
@@ -39,9 +42,9 @@ and it's why the architecture looks the way it does:
   bodies at all outside live memory itself, and apply refuses to run without
   passing the consent gate below.
 
-None of this defends against a malicious *operator* — that's out of scope
+None of this defends against a malicious _operator_ — that's out of scope
 by definition, since the operator is the trust anchor. It defends against
-malicious or merely broken *content* flowing through a pipeline the operator
+malicious or merely broken _content_ flowing through a pipeline the operator
 otherwise trusts.
 
 ## What the consent trace proves, and what it doesn't
@@ -58,9 +61,9 @@ typed something containing this exact patch set's token, at some point
 after this exact patch set's preview existed. That defeats the two failure
 modes this pipeline is actually built to prevent: a fully automated
 draft-then-apply sequence with no human step at all (there is no way for a
-script to produce a *post-preview human transcript turn* on its own), and
+script to produce a _post-preview human transcript turn_ on its own), and
 an accidental or careless mis-application, since the token has to belong to
-*this* patch set specifically — approving one patch set can't accidentally
+_this_ patch set specifically — approving one patch set can't accidentally
 or maliciously apply a different one.
 
 **What this does not prove: a cryptographic guarantee that the approval is
@@ -79,7 +82,7 @@ compromised agent already has — the pipeline isn't the thing that would be
 making the machine more attackable; a compromised agent already was.
 
 The compensating controls that hold regardless of whether the trace itself
-could theoretically be forged: the zero-tool drafter (a note body can't
+could theoretically be forged: the minimal-tool drafter (a note body can't
 drive a write even if it tries), schema validation and destination
 confinement on every proposal, and the fact that nothing here is the only
 line of defense — an operator who actually reads the diff review before
@@ -94,13 +97,13 @@ current working directory.
 
 **`--consent token --acknowledge-reduced-consent-check`**. Skips transcript
 verification entirely. Approval is just the operator-typed token present in
-`selection.json` — nothing about *when* or *by whom* that token was typed is
+`selection.json` — nothing about _when_ or _by whom_ that token was typed is
 checked. Both flags are required together, deliberately: there is no way to
 opt into this mode by accident, and no flag name that reads as anything
 other than what it is.
 
-**What token mode gives up, precisely:** proof that a human looked at *this
-specific preview* before approving it. In trace mode, forging approval
+**What token mode gives up, precisely:** proof that a human looked at _this
+specific preview_ before approving it. In trace mode, forging approval
 requires forging a transcript entry inside the operator's own session
 store. In token mode, anything capable of writing `selection.json` —
 including a malfunctioning script, a misconfigured automation, or a
@@ -136,7 +139,7 @@ tools (dead-doc sweeps, de-duplication passes, autonomous cleanup agents
 such as token-eater). Do not do this. Any tool that edits notes by a route
 other than the gated `apply` bypasses this pipeline's entire reason to
 exist: schema validation, path confinement, the sensitive-content scan,
-zero-tool drafting, operator consent, and the recall eval that checks
+minimal-tool drafting, operator consent, and the recall eval that checks
 routing survived. A cleanup PR against a mirror can be individually reviewed
 and still silently break recall — that failure mode is invisible in a diff,
 which is why the eval exists. Semantic changes to memory go through

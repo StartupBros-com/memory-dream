@@ -20,7 +20,7 @@ calling the `apply` step directly, bypasses every gate the pass exists for.
 ## Reach for a command
 
 - **`/memory-dream:dream`** — a full consolidation pass over live memory:
-  deterministic triage finds the rot, a zero-tool subagent drafts fixes it
+  deterministic triage finds the rot, a restricted subagent drafts fixes it
   cannot apply, the operator approves a diff item by item, and only approved
   changes are written (every one recoverable). Suggest this when triage would
   find flagged notes — its checks are mechanical: supersession markers,
@@ -41,7 +41,11 @@ this skill only points the way.
 Every semantic change is proposal-only. The pass drafts, verifies, previews,
 and applies solely what the operator approved by token, item by item — it treats
 note bodies as untrusted data throughout, and the drafting subagent has no
-mutating tools, so a prompt injection inside a note cannot drive a write. Apply
+mutating tools, so a prompt injection inside a note cannot drive a write.
+Both agents declare an explicit minimal tool list (`Glob` only, unused by
+their prompts); an empty list would grant every inherited tool. All task
+content is supplied inline, and `omitClaudeMd: true` excludes unrelated
+host instructions. Apply
 snapshots every touched file first, and `memory-dream restore` reverses a pass.
 Read [SECURITY.md](../../SECURITY.md) for the trust model before installing on a
 shared machine.
