@@ -32,6 +32,7 @@ from typing import Any
 
 from memory_dream import audit as AUDIT
 from memory_dream import compat, config, transcript
+from memory_dream.archive import archived_index
 
 APPLY_SCHEMA_VERSION = 1
 COMPLETION_PREFIX = "DREAM-APPLY-COMPLETE"
@@ -504,21 +505,11 @@ def apply_project(
             statuses.append({"id": pid, "status": "skipped", "reason": "source-changed-since-draft"})
             continue
         index_text = index_path.read_text(encoding="utf-8")
-        missing = [e for e in entries if e not in index_text]
-        if missing:
+        try:
+            new_index = archived_index(index_text, entries)
+        except ValueError:
             statuses.append({"id": pid, "status": "skipped", "reason": "archive-entries-not-found"})
             continue
-        # Same per-line filter the archive build used to compute its preview diff
-        # (drop any line that appears in ANY entry being archived): since the
-        # source-digest check above guarantees these are the identical bytes the
-        # build read, this reproduces the previewed MEMORY.md byte-for-byte rather
-        # than risking a second, subtly different removal algorithm at apply time.
-        entry_lines = [entry.splitlines() for entry in entries]
-        remaining = [line for line in index_text.splitlines() if all(line not in lines for lines in entry_lines)]
-        new_index = "\n".join(remaining).rstrip() + "\n"
-        pointer = "- Older or resolved entries are archived in MEMORY-archive.md (not auto-loaded); grep it when a topic is missing here."
-        if pointer not in new_index:
-            new_index += pointer + "\n"
         archive_path = memory_dir / "MEMORY-archive.md"
         existing_archive = archive_path.read_text(encoding="utf-8") if archive_path.is_file() else "# Archived memory index entries (not auto-loaded)\n"
         new_archive = existing_archive.rstrip() + "\n" + "\n".join(entries) + "\n"
