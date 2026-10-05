@@ -987,11 +987,12 @@ def run_build(args: argparse.Namespace) -> int:
         if isinstance(cluster, dict) and cluster.get("cluster_id")
     }
     live_for_drift = AUDIT.project_dirs(live_root, live=True)
+    missing_plan_clusters: set[str] = set()
     drifted_clusters: set[str] = set()
     for cid in drafts:
         cluster = plan_clusters_by_id.get(cid)
         if cluster is None:
-            drifted_clusters.add(cid)
+            missing_plan_clusters.add(cid)
             continue
         memory_dir = live_for_drift.get(cluster.get("project"))
         if memory_dir is None:
@@ -1009,14 +1010,24 @@ def run_build(args: argparse.Namespace) -> int:
             if _note_body_digest(live_body) != planned_digest:
                 drifted_clusters.add(cid)
                 break
+    if missing_plan_clusters:
+        print(
+            f"memory-dream: drafted cluster(s) not in plan {args.plan}: "
+            f"{', '.join(sorted(missing_plan_clusters))}; "
+            "drafts and plan come from different plan runs; select the matching --plan file",
+            file=sys.stderr,
+        )
     if drifted_clusters:
         print(
             "memory-dream: source notes changed since plan; re-run "
             f"plan+verification (cluster(s): {', '.join(sorted(drifted_clusters))})",
             file=sys.stderr,
         )
+    if missing_plan_clusters or drifted_clusters:
         return 2
-    proposals, dropped = assemble_proposals(plan.get("clusters", []), drafts, live_root, str(args.stamp))
+    proposals, dropped = assemble_proposals(
+        plan.get("clusters", []), drafts, live_root, str(args.stamp)
+    )
 
     out = Path(args.out).expanduser() if args.out else _fresh_pass_dir()
     out.mkdir(parents=True, exist_ok=True)
