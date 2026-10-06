@@ -309,7 +309,11 @@ def _patch_set_retention_check(stale: list[Path]) -> tuple[str, bool, str, bool]
     )
 
 
-def _wsl_windows_homes(users_root: Path = Path("/mnt/c/Users")) -> list[Path]:
+def _wsl_windows_homes(
+    users_root: Path = Path("/mnt/c/Users"),
+    *,
+    unreadable: list[Path] | None = None,
+) -> list[Path]:
     """Every real per-user home directory under `users_root` (WSL's mount
     of the Windows user-profile root), excluding the well-known system
     pseudo-accounts. Shared by `open-preview` (browsers cannot reliably
@@ -320,7 +324,8 @@ def _wsl_windows_homes(users_root: Path = Path("/mnt/c/Users")) -> list[Path]:
 
     `users_root` is a parameter (default the real /mnt/c/Users) so tests
     can point it at a temp directory instead. Returns [] when `users_root`
-    is not a directory -- the non-WSL case: nothing to resolve.
+    is not a directory -- the non-WSL case: nothing to resolve. Unreadable
+    roots or entries are skipped and optionally recorded in `unreadable`.
 
     Deliberately does not shell out to determine "the" current Windows
     username: both callers already try every returned candidate (open-
@@ -329,17 +334,30 @@ def _wsl_windows_homes(users_root: Path = Path("/mnt/c/Users")) -> list[Path]:
     correctness value -- only a slow, occasionally-hanging subprocess
     dependency doctor's preflight should not inherit.
     """
-    if not users_root.is_dir():
+    try:
+        if not users_root.is_dir():
+            return []
+        candidates = sorted(users_root.iterdir())
+    except OSError:
+        if unreadable is not None:
+            unreadable.append(users_root)
         return []
-    return [
-        p
-        for p in sorted(users_root.iterdir())
-        if p.is_dir()
-        and p.name not in ("Public", "Default", "Default User", "All Users")
-    ]
+    homes = []
+    for candidate in candidates:
+        if candidate.name in ("Public", "Default", "Default User", "All Users"):
+            continue
+        try:
+            if candidate.is_dir():
+                homes.append(candidate)
+        except OSError:
+            if unreadable is not None:
+                unreadable.append(candidate)
+    return homes
 
 
-def _preview_copy_retention_check(homes: list[Path]) -> tuple[str, bool, str, bool]:
+def _preview_copy_retention_check(
+    homes: list[Path], *, unreadable: list[Path] | None = None
+) -> tuple[str, bool, str, bool]:
     """Build the doctor "preview copy" (label, ok, detail, fatal) tuple.
 
     `homes` is the already-resolved list of WSL Windows-home candidates
@@ -349,29 +367,36 @@ def _preview_copy_retention_check(homes: list[Path]) -> tuple[str, bool, str, bo
     resolvable candidate home; either way this reports cleanly, never as
     drift. Always advisory (fatal=False): a leftover copy holds note bodies
     and is flagged for the operator to delete after review, never removed
-    here.
+    here. Unreadable paths are reported as unverifiable; an unknown-only
+    probe is advisory and does not establish concrete drift.
     """
-    if not homes:
+    if not homes and not unreadable:
         return (
             "preview copy",
             True,
             "no Windows-home candidates to check (not on WSL, or none resolved)",
             False,
         )
-    leftovers = [
-        h / "memory-dream-preview.html"
-        for h in homes
-        if (h / "memory-dream-preview.html").is_file()
-    ]
-    if not leftovers:
-        return ("preview copy", True, "none", False)
-    paths = ", ".join(str(p) for p in leftovers)
-    return (
-        "preview copy",
-        False,
-        f"leftover copy holding note bodies — delete after review: {paths}",
-        False,
+    leftovers = []
+    inaccessible = list(unreadable or [])
+    for home in homes:
+        preview = home / "memory-dream-preview.html"
+        try:
+            if preview.is_file():
+                leftovers.append(preview)
+        except OSError:
+            inaccessible.append(preview)
+    incomplete = (
+        "unverifiable paths: " + ", ".join(str(p) for p in inaccessible)
+        if inaccessible else ""
     )
+    if not leftovers:
+        return ("preview copy", True, incomplete or "none", False)
+    paths = ", ".join(str(p) for p in leftovers)
+    detail = f"leftover copy holding note bodies — delete after review: {paths}"
+    if incomplete:
+        detail += f"; {incomplete}"
+    return ("preview copy", False, detail, False)
 
 
 def _run_doctor(args) -> int:
@@ -484,7 +509,9 @@ def _run_doctor(args) -> int:
         )
     )
 
-    checks.append(_preview_copy_retention_check(_wsl_windows_homes()))
+    unreadable_homes: list[Path] = []
+    homes = _wsl_windows_homes(unreadable=unreadable_homes)
+    checks.append(_preview_copy_retention_check(homes, unreadable=unreadable_homes))
 
     for tool in ("git", "gh"):
         checks.append(
