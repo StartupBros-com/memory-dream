@@ -39,6 +39,11 @@ class ProfileErrorTests(unittest.TestCase):
 
         with mock.patch.object(Path, "is_dir", is_dir):
             self.assertEqual(cli._wsl_windows_homes(self.users), [good])
+            unreadable = []
+            self.assertEqual(
+                cli._wsl_windows_homes(self.users, unreadable=unreadable), [good]
+            )
+            self.assertEqual(unreadable, [denied])
 
     def test_excluded_system_profiles_are_never_probed(self):
         system = self.users / "Default User"

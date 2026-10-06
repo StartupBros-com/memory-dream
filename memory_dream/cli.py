@@ -324,7 +324,8 @@ def _wsl_windows_homes(
 
     `users_root` is a parameter (default the real /mnt/c/Users) so tests
     can point it at a temp directory instead. Returns [] when `users_root`
-    is not a directory -- the non-WSL case: nothing to resolve. Unreadable\n    roots or entries are skipped and optionally recorded in `unreadable`.
+    is not a directory -- the non-WSL case: nothing to resolve. Unreadable
+    roots or entries are skipped and optionally recorded in `unreadable`.
 
     Deliberately does not shell out to determine "the" current Windows
     username: both callers already try every returned candidate (open-
@@ -366,7 +367,8 @@ def _preview_copy_retention_check(
     resolvable candidate home; either way this reports cleanly, never as
     drift. Always advisory (fatal=False): a leftover copy holds note bodies
     and is flagged for the operator to delete after review, never removed
-    here.
+    here. Unreadable paths are reported as unverifiable; an unknown-only
+    probe is advisory and does not establish concrete drift.
     """
     if not homes and not unreadable:
         return (
