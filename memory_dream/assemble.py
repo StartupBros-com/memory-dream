@@ -410,6 +410,60 @@ def anticipated_index_diff(memory_dir: Path, project_proposals: list[dict[str, A
     )
 
 
+def stale_survivor_index_warnings(
+    memory_dir: Path, project_proposals: list[dict[str, Any]], projected_index: str
+) -> list[dict[str, str]]:
+    """Report changed split/compress hooks absent from the all-approved index.
+
+    This is advisory only: custom and packed index lines remain operator-owned.
+    Match the new description literally, not semantically. For packed lines,
+    only a sole-target fragment can establish that the description routes to
+    this survivor rather than another note on the same line.
+    """
+    warnings = []
+    for proposal in project_proposals:
+        action = proposal.get("action")
+        if action not in {"split", "compress"}:
+            continue
+        result = proposal["results"][0]  # the existing survivor, never an extract
+        rel = result["path"]
+        _old_name, old_description = AUDIT.entry_fields(memory_dir / rel, rel)
+        _new_name, new_description = AUDIT.frontmatter_entry(result["content"], rel)
+        if old_description == new_description:
+            continue
+        sole = packed = surfaced = False
+        for line in projected_index.splitlines():
+            targets, _escaping = AUDIT.index_targets(line)
+            if rel not in targets:
+                continue
+            if len(targets) == 1:
+                sole = True
+                surfaced = surfaced or new_description in line
+            else:
+                packed = True
+                hooks: list[tuple[set[str], str]] = []
+                for fragment in line.split("; "):
+                    fragment_targets, _escaping = AUDIT.index_targets(fragment)
+                    if fragment_targets or not hooks:
+                        hooks.append((fragment_targets, fragment))
+                    else:
+                        # A semicolon inside the description/annotation does not
+                        # start another hook until another note is targeted.
+                        hook_targets, hook = hooks[-1]
+                        hooks[-1] = (hook_targets, hook + "; " + fragment)
+                surfaced = surfaced or any(
+                    hook_targets == {rel} and new_description in hook
+                    for hook_targets, hook in hooks
+                )
+        if surfaced:
+            continue
+        kind = "custom-line-only" if sole else "packed-line-only" if packed else "not-indexed"
+        warnings.append({
+            "project": proposal["project"], "path": rel, "action": action, "kind": kind,
+        })
+    return warnings
+
+
 def confined(memory_dir: Path, rel: str) -> bool:
     """Single shared confinement check (destination confinement); see audit.confined_path."""
     return AUDIT.confined_path(memory_dir, rel) is not None
@@ -1194,6 +1248,30 @@ def run_build(args: argparse.Namespace) -> int:
             f"(only sessions that open the note see it)",
             file=sys.stderr,
         )
+    # Unlike redescribe, split/compress preserve custom sole-target hooks too.
+    # Diagnose the actual all-approved projection without changing its bytes.
+    survivor_index_warnings = []
+    for project in sorted({proposal["project"] for proposal in proposals}):
+        memory_dir = live.get(project)
+        if memory_dir is None:
+            continue
+        index_file = memory_dir / "MEMORY.md"
+        if not index_file.is_file() or index_file.is_symlink():
+            continue
+        if project in index_diffs_by_project:
+            projected_index = "\n".join(index_diffs_by_project[project][1])
+        else:
+            projected_index = index_file.read_text(encoding="utf-8", errors="replace")
+        survivor_index_warnings.extend(stale_survivor_index_warnings(
+            memory_dir, [p for p in proposals if p["project"] == project], projected_index
+        ))
+    for warning in survivor_index_warnings:
+        print(
+            f"memory-dream: WARN {warning['action']} {warning['project']}/{warning['path']}: "
+            f"index entry is {warning['kind']}; the changed description is absent "
+            "from the projected routing hook. Review MEMORY.md before approving",
+            file=sys.stderr,
+        )
     report = {
         "schema_version": 1,
         "proposals": len(proposals),
@@ -1205,6 +1283,7 @@ def run_build(args: argparse.Namespace) -> int:
         "index_over_cap": index_over_cap,
         "casing_drift": casing_drift,
         "redescribe_index_warnings": redescribe_index_warnings,
+        "survivor_index_warnings": survivor_index_warnings,
     }
     (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     preview = write_preview_html(out, manifest, report, file_diffs_by_id, index_diffs_by_project)

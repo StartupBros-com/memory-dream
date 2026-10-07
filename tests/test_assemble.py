@@ -1096,14 +1096,17 @@ class SurvivorIndexWarningTests(unittest.TestCase):
                     self.assertIn(index, projected)
 
     def test_no_warning_when_description_already_in_target_hook(self):
-        fresh = f"- [operator title](mega.md) — {self.NEW_DESCRIPTION}; manual annotation\n"
-        for action in ("split", "compress"):
-            for index in (fresh, fresh.rstrip() + "; [Other](other.md) other topic\n"):
-                with self.subTest(action=action, index=index), tempfile.TemporaryDirectory() as temp:
-                    result, report, projected, _out = self._build(Path(temp), action, index)
-                    self.assertEqual(report.get("survivor_index_warnings", []), [])
-                    self.assertNotIn(f"WARN {action} proj/mega.md", result.stderr)
-                    self.assertIn(index, projected)
+        for description in (self.NEW_DESCRIPTION, self.NEW_DESCRIPTION + "; specific routing detail"):
+            fresh = f"- [operator title](mega.md) — {description}; manual annotation\n"
+            for action in ("split", "compress"):
+                for index in (fresh, fresh.rstrip() + "; [Other](other.md) other topic\n"):
+                    with self.subTest(action=action, index=index), tempfile.TemporaryDirectory() as temp:
+                        result, report, projected, _out = self._build(
+                            Path(temp), action, index, description=description
+                        )
+                        self.assertEqual(report.get("survivor_index_warnings", []), [])
+                        self.assertNotIn(f"WARN {action} proj/mega.md", result.stderr)
+                        self.assertIn(index, projected)
 
     def test_other_packed_target_description_does_not_hide_warning(self):
         index = self.PACKED.replace("other topic", self.NEW_DESCRIPTION)
