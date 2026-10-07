@@ -41,6 +41,31 @@ class ExtractIdentityTests(unittest.TestCase):
             self.assertNotIn("originSessionId", fields)
             self.assertNotIn("modified", fields)
 
+    def test_identity_stripping_is_scoped_lossless_and_idempotent(self):
+        body = "\noriginSessionId: body\n  modified: body\n---\n尾\n"
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=repr(newline)):
+                before = (
+                    "---\nname: e\noriginSessionId: flat\nmodified: yesterday\n"
+                    "metadata:\n    originSessionId : nested\n    modified: yesterday\n"
+                    "\n  # originSessionId: keep-comment\n"
+                    "  node_type: memory\n  originSessionIds: sess-a, sess-b\n"
+                    "custom:\n  modified: keep-value\n  originSessionId: keep-value\n"
+                    "modified_extra: keep-value\nmodified: duplicate\n---\n" + body
+                ).replace("\n", newline)
+                expected = (
+                    "---\nname: e\nmetadata:\n"
+                    "\n  # originSessionId: keep-comment\n"
+                    "  node_type: memory\n  originSessionIds: sess-a, sess-b\n"
+                    "custom:\n  modified: keep-value\n  originSessionId: keep-value\n"
+                    "modified_extra: keep-value\n---\n" + body
+                ).replace("\n", newline)
+                after = audit.strip_note_identity(before)
+                self.assertEqual(after, expected)
+                self.assertEqual(audit.strip_note_identity(after), expected)
+        for text in ("originSessionId: body\n", "---\nmodified: no closing fence\n"):
+            self.assertEqual(audit.strip_note_identity(text), text)
+
     def test_new_extract_identity_removed_across_supported_layouts(self):
         schema = "node_type: memory\ntype: project\n" + self.IDENTITY
         nested = "metadata:\n" + "".join("  " + line for line in schema.splitlines(True))
@@ -54,56 +79,55 @@ class ExtractIdentityTests(unittest.TestCase):
             ),
         }
         for label, schema_fields in donor_shapes.items():
-            for newline in ("\n", "\r\n"):
-                with self.subTest(layout=label, newline=repr(newline)), tempfile.TemporaryDirectory() as temp:
-                    # Unknown schema fields and plural provenance are not identity.
-                    donor = (self.HEADER + schema_fields + (
-                        "custom_field: kept\noriginSessionIds: sess-a, sess-b\n"
-                        "custom:\n  modified: keep-custom-value\n"
-                        "  originSessionId: keep-custom-session\n---\nSource prose.\n"
-                    )).replace("\n", newline)
-                    live_root, live = self._project(Path(temp), {"mega.md": donor})
-                    cluster = self._cluster(["mega.md"], live)
-                    draft = self._draft()
-                    drafts = {cluster["cluster_id"]: [draft]}
-                    proposals, dropped = assemble.assemble_proposals(
-                        [cluster], drafts, live_root, self.STAMP
-                    )
-                    self.assertEqual(dropped, [])
-                    self.assertEqual(len(proposals), 1)
-                    proposal = proposals[0]
-                    self.assertEqual(proposal["sources"], [
-                        {"path": "mega.md", "digest": audit.digest(live / "mega.md")}
-                    ])
-                    self.assertEqual(proposal["deletes"], [])
-                    # Existing survivor is precisely the old preservation path.
-                    extra = {"last_validated": self.STAMP} if "decay" in label else None
-                    self.assertEqual(proposal["results"][0]["content"], audit.preserve_metadata(
-                        draft["survivor"]["content"], donor, extra
-                    ))
-                    self.assertEqual(audit.origin_session_id(proposal["results"][0]["content"]), "sess-source")
-                    for result, extract in zip(proposal["results"][1:], draft["extracts"]):
-                        content = result["content"]
-                        with self.subTest(path=result["path"]):
-                            self._assert_no_identity(content)
-                            metadata = audit.parse_frontmatter(content)[0]
-                            self.assertEqual(metadata["metadata"]["node_type"], "memory")
-                            self.assertEqual(metadata["metadata"]["type"],
-                                             audit.parse_frontmatter(extract["content"])[0]["metadata"]["type"])
-                            self.assertEqual(metadata["metadata"]["confidence"], config.NEW_EXTRACT_CONFIDENCE)
-                            self.assertEqual(metadata["metadata"]["maturity"], config.NEW_EXTRACT_MATURITY)
-                            self.assertEqual(metadata["metadata"]["last_validated"], self.STAMP)
-                            self.assertEqual(metadata["custom_field"], "kept")
-                            self.assertEqual(metadata["originSessionIds"], "sess-a, sess-b")
-                            self.assertIn("  modified: keep-custom-value" + newline, content)
-                            self.assertIn("  originSessionId: keep-custom-session" + newline, content)
-                            self.assertEqual(audit.split_frontmatter_raw(content)[1],
-                                             audit.split_frontmatter_raw(extract["content"])[1])
-                    again, dropped = assemble.assemble_proposals([cluster], drafts, live_root, self.STAMP)
-                    self.assertEqual(dropped, [])
-                    self.assertEqual(again, proposals)
-                    self.assertEqual(audit.content_id(again), audit.content_id(proposals))
-                    self.assertEqual((live / "mega.md").read_bytes(), donor.encode())
+            with self.subTest(layout=label), tempfile.TemporaryDirectory() as temp:
+                # Unknown schema fields and plural provenance are not identity.
+                donor = (self.HEADER + schema_fields + (
+                    "custom_field: kept\noriginSessionIds: sess-a, sess-b\n"
+                    "custom:\n  modified: keep-custom-value\n"
+                    "  originSessionId: keep-custom-session\n---\nSource prose.\n"
+                ))
+                live_root, live = self._project(Path(temp), {"mega.md": donor})
+                cluster = self._cluster(["mega.md"], live)
+                draft = self._draft()
+                drafts = {cluster["cluster_id"]: [draft]}
+                proposals, dropped = assemble.assemble_proposals(
+                    [cluster], drafts, live_root, self.STAMP
+                )
+                self.assertEqual(dropped, [])
+                self.assertEqual(len(proposals), 1)
+                proposal = proposals[0]
+                self.assertEqual(proposal["sources"], [
+                    {"path": "mega.md", "digest": audit.digest(live / "mega.md")}
+                ])
+                self.assertEqual(proposal["deletes"], [])
+                # Existing survivor is precisely the old preservation path.
+                extra = {"last_validated": self.STAMP} if "decay" in label else None
+                self.assertEqual(proposal["results"][0]["content"], audit.preserve_metadata(
+                    draft["survivor"]["content"], donor, extra
+                ))
+                self.assertEqual(audit.origin_session_id(proposal["results"][0]["content"]), "sess-source")
+                for result, extract in zip(proposal["results"][1:], draft["extracts"]):
+                    content = result["content"]
+                    with self.subTest(path=result["path"]):
+                        self._assert_no_identity(content)
+                        metadata = audit.parse_frontmatter(content)[0]
+                        self.assertEqual(metadata["metadata"]["node_type"], "memory")
+                        self.assertEqual(metadata["metadata"]["type"],
+                                         audit.parse_frontmatter(extract["content"])[0]["metadata"]["type"])
+                        self.assertEqual(metadata["metadata"]["confidence"], config.NEW_EXTRACT_CONFIDENCE)
+                        self.assertEqual(metadata["metadata"]["maturity"], config.NEW_EXTRACT_MATURITY)
+                        self.assertEqual(metadata["metadata"]["last_validated"], self.STAMP)
+                        self.assertEqual(metadata["custom_field"], "kept")
+                        self.assertEqual(metadata["originSessionIds"], "sess-a, sess-b")
+                        self.assertIn("  modified: keep-custom-value\n", content)
+                        self.assertIn("  originSessionId: keep-custom-session\n", content)
+                        self.assertEqual(audit.split_frontmatter_raw(content)[1],
+                                         audit.split_frontmatter_raw(extract["content"])[1])
+                again, dropped = assemble.assemble_proposals([cluster], drafts, live_root, self.STAMP)
+                self.assertEqual(dropped, [])
+                self.assertEqual(again, proposals)
+                self.assertEqual(audit.content_id(again), audit.content_id(proposals))
+                self.assertEqual((live / "mega.md").read_bytes(), donor.encode())
 
     def test_drafter_identity_removed_when_donor_has_no_frontmatter(self):
         # preserve_metadata returns the drafter unchanged on this fallback path.
