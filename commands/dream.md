@@ -643,6 +643,15 @@ the declined proposal's own source and result note paths. Nothing ever
 prunes this file — it only grows — and a later triage pass reads it to
 avoid re-flagging a proposal the operator already turned down.
 
+The sibling `deferral-streaks.json` file also lives directly under the pass
+root (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/logs/memory-dream/passes/` by
+default, or `MEMORY_DREAM_PASS_ROOT` when set), alongside rather than inside
+the dated pass-set directories. It stores the consecutive-deferral counts
+used by triage's `repeat_deferral` report. This file is never pruned
+automatically; leave it in place when manually removing old pass-set
+directories so repeat-deferral history survives. Individual streak records
+reset when a newer pass no longer defers the corresponding cluster or note.
+
 Build `selection.json` with the approved IDs (only proposals shown in this
 preview), the emitted trace, and `patch_set_id` set to the manifest `id`.
 Apply refuses unless the approval turn is a real post-preview human message
