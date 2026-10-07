@@ -600,21 +600,24 @@ def assemble_proposals(
             results = [{"path": survivor["path"], "content": survivor_content}]
             for extract in extracts:
                 # Each extract inherits the split note's frontmatter schema fields
-                # (node_type, originSessionId): honest provenance, they derive from it.
+                # (e.g. node_type), but not the donor's singular identity or timestamp.
+                # Source provenance remains in the proposal and drafted body links.
                 # Extracts also get FULL decay frontmatter: they are new notes born
                 # from a fidelity-verified pass, entering at candidate maturity.
                 assert donor_content is not None
                 results.append(
                     {
                         "path": extract["path"],
-                        "content": AUDIT.preserve_metadata(
-                            extract["content"],
-                            donor_content,
-                            {
-                                "confidence": config.NEW_EXTRACT_CONFIDENCE,
-                                "maturity": config.NEW_EXTRACT_MATURITY,
-                                "last_validated": stamp,
-                            },
+                        "content": AUDIT.strip_note_identity(
+                            AUDIT.preserve_metadata(
+                                extract["content"],
+                                donor_content,
+                                {
+                                    "confidence": config.NEW_EXTRACT_CONFIDENCE,
+                                    "maturity": config.NEW_EXTRACT_MATURITY,
+                                    "last_validated": stamp,
+                                },
+                            )
                         ),
                     }
                 )
