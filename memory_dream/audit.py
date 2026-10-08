@@ -718,9 +718,11 @@ def triage_project(project: str, memory_dir: Path, now: dt.date) -> tuple[int, l
 def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     """(project, path) pairs an APPLIED dream pass touched within the window.
 
-    Reads applied patch-set manifests so both triage and the planner can skip
-    consolidation-refire flags (size and supersession-language heuristics fire
-    on notes already in their durable form)."""
+    Joins explicit applied outcomes to proposals by (project, proposal id),
+    never by manifest existence or project-level success alone. Both triage
+    and the planner use this to avoid consolidation-refire flags on notes
+    already in their durable form. Missing or malformed evidence cannot
+    establish that a proposal was applied."""
     recently_applied: set[tuple[str, str]] = set()
     pass_root = config.pass_root()
     cutoff = dt.date.fromordinal(now.toordinal() - days)
@@ -729,25 +731,51 @@ def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     for patch_dir in pass_root.iterdir():
         apply_manifest = patch_dir / "apply-manifest.json"
         manifest = patch_dir / "manifest.json"
-        if not (apply_manifest.is_file() and manifest.is_file()):
-            continue
-        if dt.date.fromtimestamp(apply_manifest.stat().st_mtime) < cutoff:
-            continue
         try:
-            proposals = json.loads(manifest.read_text(encoding="utf-8"))["proposals"]
-        except (json.JSONDecodeError, KeyError, OSError):
+            if not (apply_manifest.is_file() and manifest.is_file()):
+                continue
+            if dt.date.fromtimestamp(apply_manifest.stat().st_mtime) < cutoff:
+                continue
+            outcome_payload = json.loads(apply_manifest.read_text(encoding="utf-8"))
+            proposal_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeError, OSError):
             continue
+        projects = outcome_payload.get("projects") if isinstance(outcome_payload, dict) else None
+        proposals = proposal_payload.get("proposals") if isinstance(proposal_payload, dict) else None
+        if not isinstance(projects, list) or not isinstance(proposals, list):
+            continue
+        applied: set[tuple[str, str]] = set()
+        for entry in projects:
+            if not isinstance(entry, dict):
+                continue
+            project = entry.get("project")
+            statuses = entry.get("proposals")
+            if not isinstance(project, str) or not project or not isinstance(statuses, list):
+                continue
+            for status in statuses:
+                if not isinstance(status, dict) or status.get("status") != "applied":
+                    continue
+                pid = status.get("id")
+                if isinstance(pid, str) and pid:
+                    applied.add((project, pid))
         for proposal in proposals:
-            project = proposal.get("project", "")
-            for result_file in proposal.get("results") or []:
-                if isinstance(result_file, dict) and result_file.get("path"):
-                    recently_applied.add((project, result_file["path"]))
+            if not isinstance(proposal, dict):
+                continue
+            project, pid = proposal.get("project"), proposal.get("id")
+            if not isinstance(project, str) or not isinstance(pid, str) or (project, pid) not in applied:
+                continue
+            results = proposal.get("results")
+            if isinstance(results, list):
+                for result_file in results:
+                    path = result_file.get("path") if isinstance(result_file, dict) else None
+                    if isinstance(path, str) and path:
+                        recently_applied.add((project, path))
             # Early-wave manifests store survivor as a bare path string.
             survivor = proposal.get("survivor")
+            if isinstance(survivor, dict):
+                survivor = survivor.get("path")
             if isinstance(survivor, str) and survivor:
                 recently_applied.add((project, survivor))
-            elif isinstance(survivor, dict) and survivor.get("path"):
-                recently_applied.add((project, survivor["path"]))
     return recently_applied
 
 
