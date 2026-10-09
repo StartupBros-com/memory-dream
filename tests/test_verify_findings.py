@@ -216,6 +216,42 @@ class CLITests(unittest.TestCase):
                 self.assertEqual(stamped[key], original[key])
             self.assertIn("quote_checked", stamped)
 
+    def test_reverification_replaces_stamps_and_preserves_payload(self):
+        for wrapped in (True, False):
+            with tempfile.TemporaryDirectory() as temp:
+                fixture = Fixture(Path(temp))
+                source = fixture.repo / "a.md"
+                original = finding(extra={"unverified_quote": "unrelated metadata"})
+                entry = {"path": "a.md", "findings": [original], "stage": "checker"}
+                payload = {"files": [entry], "pass": "synthetic"} if wrapped else [entry]
+                findings_path = fixture.root / "findings.json"
+                findings_path.write_text(json.dumps(payload), encoding="utf-8")
+                steps = [
+                    (None, False),
+                    (None, False),
+                    ("the quoted span", True),
+                    ("the quoted span", True),
+                    ("the source no longer contains the quote", False),
+                    ("the source no longer contains the quote", False),
+                ]
+                for step, (content, verified) in enumerate(steps):
+                    with self.subTest(wrapped=wrapped, step=step):
+                        if content is not None:
+                            source.write_text(content, encoding="utf-8")
+                        result = fixture.run(findings_path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stderr, "")
+                        self.assertIn(f"checked 1, unverified {int(not verified)}", result.stdout)
+                        expected_finding = {**original, "quote_checked": verified}
+                        if not verified:
+                            expected_finding["unverified_quote"] = True
+                        expected_entry = {**entry, "findings": [expected_finding]}
+                        expected = (
+                            {"files": [expected_entry], "pass": "synthetic"}
+                            if wrapped else [expected_entry]
+                        )
+                        self.assertEqual(fixture.load(findings_path), expected)
+
 
 class HelperTests(unittest.TestCase):
     """Pure-helper tests call memory_dream.verify_findings directly."""
@@ -285,6 +321,42 @@ class HelperTests(unittest.TestCase):
             _result, checked, unverified = VF.verify_findings_payload(data, root)
             self.assertEqual(checked, 1)
             self.assertEqual(unverified, 0)
+
+    def test_success_removes_preexisting_failure_marker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "a.md").write_text("the quoted span", encoding="utf-8")
+            for wrapped in (True, False):
+                for old_marker in (True, False, None, "stale", {"custom": "value"}):
+                    with self.subTest(wrapped=wrapped, old_marker=old_marker):
+                        original = finding(extra={"unverified_quote": "keep nested data"})
+                        stale = {**original, "quote_checked": "stale", "unverified_quote": old_marker}
+                        entry = {"path": "a.md", "findings": [stale]}
+                        data = {"files": [entry]} if wrapped else [entry]
+                        result, checked, unverified = VF.verify_findings_payload(data, root)
+                        self.assertIs(result, data)
+                        self.assertEqual((checked, unverified), (1, 0))
+                        self.assertEqual(stale, {**original, "quote_checked": True})
+
+    def test_reverification_leaves_unreached_records_untouched(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stale = {"quote_checked": False, "unverified_quote": True, "quote": "keep me"}
+            data = {
+                "files": [
+                    "not a file record",
+                    {"path": "a.md", "findings": stale},
+                    {"path": "a.md", "unverified_quote": "file metadata"},
+                    {"path": "a.md", "findings": [None, "not a finding"]},
+                ],
+                "unverified_quote": "top-level metadata",
+            }
+            before = json.dumps(data, sort_keys=True)
+            for _repeat in range(2):
+                result, checked, unverified = VF.verify_findings_payload(data, root)
+                self.assertIs(result, data)
+                self.assertEqual((checked, unverified), (0, 0))
+                self.assertEqual(json.dumps(data, sort_keys=True), before)
 
 
 if __name__ == "__main__":
