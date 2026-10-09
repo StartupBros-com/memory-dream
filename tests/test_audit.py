@@ -11,6 +11,7 @@ Pure-helper tests (AuditHelperTests) call memory_dream.audit directly.
 """
 
 import datetime as dt
+import io
 import json
 import os
 import shutil
@@ -19,9 +20,11 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
-from memory_dream import audit, config
+from memory_dream import audit, compat, config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -1174,6 +1177,174 @@ class TriageDeferralStreakTests(unittest.TestCase):
         env = _clean_env(claude_config_dir)
         env["MEMORY_DREAM_PASS_ROOT"] = str(pass_root)
         return env
+
+    def test_concurrent_newer_report_waits_for_next_run_without_losing_streaks(self):
+        # Pause an older compute_triage after it has read/calculated p1 but
+        # before atomic_write. A second process sees p2 while the first is
+        # paused. It must return saved state without writing around the lock;
+        # after release, the next run counts p2 exactly once on top of p1.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live = root / "live"
+            live.mkdir()
+            pass_root = root / "passes"
+            env = self._env(root, pass_root)
+            entry = {"project": "proj", "path": "note.md", "reason": "cluster-size-cap"}
+            self._write_report(pass_root, "p0", [entry], 0)
+            self.assertEqual(self._run(live, env).returncode, 0)
+            streak_path = pass_root / audit.DEFERRAL_STREAKS_FILENAME
+            saved = streak_path.read_bytes()
+            self._write_report(pass_root, "p1", [entry], 5)
+            ready = root / "writer-ready"
+            script = """
+import datetime as dt
+import json
+import sys
+from pathlib import Path
+from memory_dream import audit
+
+original_write = audit.atomic_write
+def paused_write(path, data):
+    Path(sys.argv[2]).write_text("ready", encoding="utf-8")
+    if sys.stdin.readline().strip() != "release":
+        raise RuntimeError("writer was not released")
+    original_write(path, data)
+
+audit.atomic_write = paused_write
+result = audit.compute_triage(Path(sys.argv[1]), None, dt.date(2026, 7, 17), 0, 0)
+print(json.dumps(result))
+"""
+            older = subprocess.Popen(
+                [sys.executable, "-c", script, str(live), str(ready)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env, cwd=REPO_ROOT,
+            )
+            try:
+                deadline = time.monotonic() + 20
+                while not ready.is_file() and older.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.is_file(), "older writer never reached atomic_write")
+                self._write_report(pass_root, "p2", [entry], 10)
+                newer = subprocess.run(
+                    [sys.executable, "-m", "memory_dream", "triage", "--format", "json",
+                     "--live-root", str(live)],
+                    capture_output=True, text=True, env=env, cwd=REPO_ROOT, timeout=20,
+                )
+                while_paused = streak_path.read_bytes()
+            finally:
+                try:
+                    older_out, older_err = older.communicate(input="release\n", timeout=20)
+                except subprocess.TimeoutExpired:
+                    older.kill()
+                    older.communicate()
+                    raise
+            self.assertEqual(older.returncode, 0, older_out + older_err)
+            self.assertEqual(newer.returncode, 0, newer.stdout + newer.stderr)
+            self.assertEqual(json.loads(newer.stdout)["summary"]["flagged"], 0)
+            self.assertEqual(while_paused, saved, "contending triage wrote around the lock")
+            self.assertIn("WARNING", newer.stderr)
+            self.assertIn(audit.DEFERRAL_STREAKS_FILENAME + ".lock", newer.stderr)
+            self.assertEqual(json.loads(older_out)["repeat_deferral"][0]["count"], 2)
+            self.assertEqual(json.loads(streak_path.read_text())["last_pass_id"], "p1")
+            caught_up = self._run(live, env)
+            self.assertEqual(caught_up.returncode, 0, caught_up.stderr)
+            self.assertEqual(json.loads(caught_up.stdout)["repeat_deferral"][0]["count"], 3)
+            final = streak_path.read_bytes()
+            self.assertEqual(json.loads(final)["last_pass_id"], "p2")
+            self.assertEqual(self._run(live, env).returncode, 0)
+            self.assertEqual(streak_path.read_bytes(), final)
+
+    def test_lock_contention_without_saved_state_keeps_triage_usable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live = root / "live"
+            live.mkdir()
+            pass_root = root / "passes"
+            env = self._env(root, pass_root)
+            self._write_report(pass_root, "p1", [
+                {"project": "proj", "path": "note.md", "reason": "cluster-size-cap"},
+            ], 0)
+            streak_path = pass_root / audit.DEFERRAL_STREAKS_FILENAME
+            with compat.FileLock(pass_root / (audit.DEFERRAL_STREAKS_FILENAME + ".lock")):
+                result = self._run(live, env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout)["repeat_deferral"], [])
+                self.assertIn("WARNING", result.stderr)
+                self.assertFalse(streak_path.exists())
+            self.assertEqual(self._run(live, env).returncode, 0)
+            self.assertEqual(json.loads(streak_path.read_text())["streaks"][0]["count"], 1)
+
+    def test_lock_setup_failure_returns_saved_streaks_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pass_root = Path(temp) / "passes"
+            entry = {"project": "proj", "path": "note.md", "reason": "cluster-size-cap"}
+            self._write_report(pass_root, "p1", [entry], 0)
+            with mock.patch.object(config, "pass_root", return_value=pass_root):
+                saved_streaks = audit.update_deferral_streaks()
+                streak_path = pass_root / audit.DEFERRAL_STREAKS_FILENAME
+                saved = streak_path.read_bytes()
+                self._write_report(pass_root, "p2", [entry], 5)
+                errors = io.StringIO()
+                with mock.patch.object(compat.FileLock, "__enter__", side_effect=PermissionError("read-only fixture")), \
+                     mock.patch.object(audit, "atomic_write") as write, redirect_stderr(errors):
+                    self.assertEqual(audit.update_deferral_streaks(), saved_streaks)
+                write.assert_not_called()
+                self.assertEqual(streak_path.read_bytes(), saved)
+                self.assertIn("WARNING", errors.getvalue())
+
+    def test_write_failure_releases_lock_and_preserves_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pass_root = Path(temp) / "passes"
+            entry = {"project": "proj", "path": "note.md", "reason": "cluster-size-cap"}
+            self._write_report(pass_root, "p1", [entry], 0)
+            with mock.patch.object(config, "pass_root", return_value=pass_root):
+                audit.update_deferral_streaks()
+                streak_path = pass_root / audit.DEFERRAL_STREAKS_FILENAME
+                saved = streak_path.read_bytes()
+                self._write_report(pass_root, "p2", [entry], 5)
+                errors = io.StringIO()
+                with mock.patch.object(audit, "atomic_write", side_effect=OSError("fixture write failed")), \
+                     redirect_stderr(errors):
+                    self.assertEqual(audit.update_deferral_streaks()[0]["count"], 2)
+                self.assertEqual(streak_path.read_bytes(), saved)
+                self.assertIn("WARNING", errors.getvalue())
+                self.assertEqual(audit.update_deferral_streaks()[0]["count"], 2)
+                self.assertEqual(json.loads(streak_path.read_text())["last_pass_id"], "p2")
+
+    def test_lock_covers_state_read_report_selection_and_write(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pass_root = Path(temp) / "passes"
+            self._write_report(pass_root, "p1", [], 0)
+            lock_path = pass_root / (audit.DEFERRAL_STREAKS_FILENAME + ".lock")
+            calls = []
+
+            def checked(name, original):
+                def call(*args):
+                    with self.assertRaises(compat.LockHeld):
+                        with compat.FileLock(lock_path):
+                            pass
+                    calls.append(name)
+                    return original(*args)
+                return call
+
+            with mock.patch.object(config, "pass_root", return_value=pass_root), \
+                 mock.patch.object(audit, "_load_deferral_streaks", checked("load", audit._load_deferral_streaks)), \
+                 mock.patch.object(audit, "_newest_pass_report", checked("newest", audit._newest_pass_report)), \
+                 mock.patch.object(audit, "atomic_write", checked("write", audit.atomic_write)):
+                self.assertEqual(audit.update_deferral_streaks(), [])
+            self.assertEqual(calls, ["load", "newest", "write"])
+
+    def test_no_report_and_counted_pass_release_lock(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pass_root = Path(temp) / "passes"
+            with mock.patch.object(config, "pass_root", return_value=pass_root):
+                self.assertEqual(audit.update_deferral_streaks(), [])
+                self.assertFalse((pass_root / audit.DEFERRAL_STREAKS_FILENAME).exists())
+                self._write_report(pass_root, "p1", [], 0)
+                self.assertEqual(audit.update_deferral_streaks(), [])
+                self.assertEqual(audit.update_deferral_streaks(), [])
+                with compat.FileLock(pass_root / (audit.DEFERRAL_STREAKS_FILENAME + ".lock")):
+                    pass
 
     def test_three_consecutive_passes_then_reset(self):
         # Scenario 4: a key deferred in 3 consecutive passes is named with

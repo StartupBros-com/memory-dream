@@ -906,7 +906,22 @@ def update_deferral_streaks() -> list[dict[str, Any]]:
     count incremented (or starts at 1); any key that was tracked but is
     absent from the newest pass resets -- its record is dropped, matching
     "consecutive passes deferred" semantics.
+
+    The sibling lock covers both reads and the atomic replacement. On
+    contention or lock setup failure, return saved streaks without writing;
+    a later triage/doctor run can advance the pending newest pass.
     """
+    root = config.pass_root()
+    try:
+        with compat.FileLock(root / (DEFERRAL_STREAKS_FILENAME + ".lock")):
+            return _update_deferral_streaks_locked()
+    except (compat.LockHeld, OSError) as error:
+        print(f"memory-dream triage: WARNING could not update {DEFERRAL_STREAKS_FILENAME}: {error}", file=sys.stderr)
+        return _load_deferral_streaks()["streaks"]
+
+
+def _update_deferral_streaks_locked() -> list[dict[str, Any]]:
+    """Read, advance and persist streaks while the caller holds their lock."""
     data = _load_deferral_streaks()
     newest = _newest_pass_report(config.pass_root())
     if newest is None:
