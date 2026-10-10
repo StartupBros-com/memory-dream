@@ -307,76 +307,109 @@ def rejected_proposal_entries(
         proposal_id = proposal.get("id")
         if not isinstance(proposal_id, str) or proposal_id in approved:
             continue
-        paths: set[str] = set()
-        for result in proposal.get("results") or []:
-            if isinstance(result, dict) and isinstance(result.get("path"), str):
-                paths.add(result["path"])
-        for source in proposal.get("sources") or []:
-            if isinstance(source, dict) and isinstance(source.get("path"), str):
-                paths.add(source["path"])
-        entries.append(
-            {
-                "recorded_at": recorded_at,
-                "patch_set_id": manifest.get("id"),
-                "proposal_id": proposal_id,
-                "project": proposal.get("project"),
-                "paths": sorted(paths),
-            }
-        )
+        entries.append(_proposal_decision_entry(manifest, proposal, recorded_at))
     return entries
 
 
-def record_rejections(entries: list[dict[str, Any]]) -> None:
-    """Append ``entries`` to ``<config.pass_root()>/rejections.json`` -- a
-    SIBLING of the dated patch-set directories, never inside one. The
-    retention advisory's suggested cleanup deletes whole pass directories;
-    a rejection record living inside one would be erased right along with
-    it, silently un-suppressing a proposal the operator already declined.
-    Nothing here ever prunes the file -- a reader filters by each entry's
-    own ``recorded_at`` -- so it only ever grows.
+def _proposal_decision_entry(
+    manifest: dict[str, Any], proposal: dict[str, Any], recorded_at: str
+) -> dict[str, Any]:
+    paths: set[str] = set()
+    for field in ("sources", "results"):
+        for item in proposal.get(field) or []:
+            if isinstance(item, dict) and isinstance(item.get("path"), str):
+                paths.add(item["path"])
+    return {
+        "recorded_at": recorded_at,
+        "patch_set_id": manifest.get("id"),
+        "proposal_id": proposal.get("id"),
+        "project": proposal.get("project"),
+        "paths": sorted(paths),
+    }
 
-    Malformed existing content is renamed aside (never silently discarded
-    or overwritten) and a fresh file is started. This is a best-effort
-    durability record, not a safety gate: every failure mode here must
-    leave an otherwise-complete apply's exit code untouched, so the caller
-    wraps this call and downgrades any OSError to a warning.
+
+def applied_proposal_entries(
+    manifest: dict[str, Any], outcomes: list[dict[str, Any]], recorded_at: str
+) -> list[dict[str, Any]]:
+    """Successful decisions only, joined by project AND proposal id.
+
+    Approval, aggregate counts, and a project's committed flag cannot prove
+    that an individual proposal was written. Failed/skipped/left proposals
+    must not supersede an earlier rejection.
     """
-    if not entries:
+    applied = {
+        (entry["project"], status["id"])
+        for entry in outcomes for status in entry["proposals"]
+        if status["status"] == "applied"
+    }
+    return [
+        _proposal_decision_entry(manifest, proposal, recorded_at)
+        for proposal in manifest.get("proposals", [])
+        if (proposal.get("project"), proposal.get("id")) in applied
+    ]
+
+
+def record_rejections(
+    entries: list[dict[str, Any]], applied_entries: list[dict[str, Any]] | None = None
+) -> None:
+    """Keep rejection history and successful supersessions beside pass dirs.
+
+    Original ``entries`` remain append-only. ``supersessions`` records the
+    successful decisions for (project, path) pairs, independently of the
+    applied-suppression window and dated-pass retention. A reader compares
+    apply-start timestamps; a still-later or same-time rejection wins. All
+    successes are retained, even before the first rejection is recorded, so
+    delayed writers cannot make an earlier rejection look current again.
+
+    Malformed existing content is renamed aside before starting fresh.
+    This is advisory durability, never a gate: the caller warns on OSError
+    or lock contention without changing an otherwise-complete apply's exit code.
+    """
+    if not entries and not applied_entries:
         return
     root = config.pass_root()
     root.mkdir(parents=True, exist_ok=True)
     compat.restrict_permissions(root)
-    path = root / REJECTIONS_FILENAME
-    existing: list[Any] = []
+    # Patch sets can have different parents (or --lock overrides) while sharing
+    # this ledger. Its own lock covers the complete read/modify/write, even
+    # when no rejection file exists yet. Never write around contention.
+    with compat.FileLock(root / (REJECTIONS_FILENAME + ".lock")):
+        _record_rejections_locked(root / REJECTIONS_FILENAME, entries, applied_entries)
+
+
+def _record_rejections_locked(
+    path: Path, entries: list[dict[str, Any]], applied_entries: list[dict[str, Any]] | None
+) -> None:
+    payload: dict[str, Any] = {"schema_version": APPLY_SCHEMA_VERSION, "entries": []}
     if path.is_file():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
                 raise ValueError('rejections.json must hold a JSON object with an "entries" list')
-            existing = payload["entries"]
         except (OSError, json.JSONDecodeError, ValueError):
             corrupt = path.with_name(f"{REJECTIONS_FILENAME}.corrupt-{time.time_ns()}")
-            try:
-                path.replace(corrupt)
-                print(
-                    f"memory-dream apply: WARNING corrupt {REJECTIONS_FILENAME} renamed aside to"
-                    f" {corrupt.name}; starting a fresh file",
-                    file=sys.stderr,
-                )
-            except OSError as rename_error:
-                print(
-                    f"memory-dream apply: WARNING corrupt {REJECTIONS_FILENAME} could not be renamed"
-                    f" aside ({rename_error}); overwriting it",
-                    file=sys.stderr,
-                )
-            existing = []
-    AUDIT.atomic_write(
-        path,
-        (
-            json.dumps({"schema_version": APPLY_SCHEMA_VERSION, "entries": existing + entries}, indent=2, sort_keys=True)
-            + "\n"
-        ).encode("utf-8"),
-    )
+            # If preservation fails, leave the original untouched. An advisory
+            # ledger update must never destroy the history it could not read.
+            path.replace(corrupt)
+            print(
+                f"memory-dream apply: WARNING corrupt {REJECTIONS_FILENAME} renamed aside to"
+                f" {corrupt.name}; starting a fresh file",
+                file=sys.stderr,
+            )
+            payload = {"schema_version": APPLY_SCHEMA_VERSION, "entries": []}
+    # Keep successful evidence even without an existing rejection. An older
+    # apply from another patch-set root can record its rejection after this
+    # one completes; timestamp ordering must still recognize the later success.
+    supersessions = applied_entries or []
+    if not entries and not supersessions:
+        return
+    if supersessions:
+        previous = payload.get("supersessions", [])
+        if not isinstance(previous, list):
+            raise OSError("invalid supersessions list; rejection history left unchanged")
+        payload["supersessions"] = previous + supersessions
+    payload["entries"] = payload["entries"] + entries
+    AUDIT.atomic_write(path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
 # --- Apply --------------------------------------------------------------------
@@ -906,8 +939,11 @@ def _run_apply_locked(
     # must not turn this otherwise-complete apply into a failed one.
     recorded_at = dt.datetime.fromtimestamp(now, tz=dt.timezone.utc).isoformat()
     try:
-        record_rejections(rejected_proposal_entries(manifest, approved, recorded_at))
-    except OSError as error:
+        record_rejections(
+            rejected_proposal_entries(manifest, approved, recorded_at),
+            applied_proposal_entries(manifest, results, recorded_at),
+        )
+    except (OSError, compat.LockHeld) as error:
         print(f"memory-dream apply: WARNING could not record rejections: {error}", file=sys.stderr)
 
     # Single-token next= keeps the completion line whitespace-splittable; the
