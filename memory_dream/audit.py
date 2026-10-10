@@ -757,6 +757,41 @@ def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
 REJECTIONS_FILENAME = "rejections.json"
 
 
+def _decision_timestamp(value: Any) -> dt.datetime | None:
+    """A comparable ledger timestamp, or no evidence of decision ordering.
+
+    Producers record timezone-aware ISO timestamps. Do not guess a timezone
+    for malformed/legacy naive values when deciding to silence a rejection.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else None
+
+
+def _latest_supersessions(payload: dict[str, Any]) -> dict[tuple[str, str], dt.datetime]:
+    latest: dict[tuple[str, str], dt.datetime] = {}
+    entries = payload.get("supersessions")
+    if not isinstance(entries, list):
+        return latest
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        stamp = _decision_timestamp(entry.get("recorded_at"))
+        project, paths = entry.get("project"), entry.get("paths")
+        if stamp is None or not isinstance(project, str) or not isinstance(paths, list):
+            continue
+        for path in paths:
+            if isinstance(path, str):
+                key = (project, path)
+                if key not in latest or stamp > latest[key]:
+                    latest[key] = stamp
+    return latest
+
+
 def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     """(project, path) pairs a dream-pass apply recorded as REJECTED within the
     window (apply.record_rejections appends to config.pass_root()/rejections.json).
@@ -774,7 +809,9 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     Unlike recently_applied_paths (patch-set-manifest mtime windowing),
     rejections.json is append-only and every entry carries its own
     ``recorded_at`` ISO timestamp, so windowing here is per-entry rather than
-    per-file.
+    per-file. Successful applications recorded in ``supersessions`` invalidate
+    only earlier rejections for the same (project, path). These durable
+    records do not expire with the independent applied-suppression window.
     """
     recently_rejected: set[tuple[str, str]] = set()
     path = config.pass_root() / REJECTIONS_FILENAME
@@ -787,6 +824,7 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     entries = payload.get("entries") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
         return recently_rejected
+    supersessions = _latest_supersessions(payload)
     cutoff = dt.date.fromordinal(now.toordinal() - days)
     for entry in entries:
         if not isinstance(entry, dict):
@@ -803,9 +841,14 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
         project = entry.get("project")
         if not isinstance(project, str):
             continue
+        rejected_at = _decision_timestamp(recorded_at)
         for path_value in entry.get("paths") or []:
             if isinstance(path_value, str):
-                recently_rejected.add((project, path_value))
+                key = (project, path_value)
+                applied_at = supersessions.get(key)
+                if rejected_at is not None and applied_at is not None and applied_at > rejected_at:
+                    continue
+                recently_rejected.add(key)
     return recently_rejected
 
 

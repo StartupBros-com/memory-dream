@@ -48,6 +48,22 @@ truths. Two categories deserve explicit distrust:
 | `SUPPRESS_APPLIED_DAYS`        | 14      | Suppresses re-flagging notes a recent pass just touched.                                                  | Corpus + operational (avoids re-litigating the same notes pass after pass).                                               | A note just consolidated shows up flagged again next run, wasting drafting effort re-verifying it.                 | A note a previous pass mishandled, or that kept decaying, doesn't resurface for a long stretch.                                                   | `memory-dream triage --suppress-applied-days`, env, or config.  |
 | `SUPPRESS_REJECTED_DAYS`       | 14      | Suppresses re-flagging notes whose proposal the operator recently rejected (read from `rejections.json`). | Mirrors `SUPPRESS_APPLIED_DAYS`'s operational rationale: a declined proposal should not be re-drafted the very next pass. | A proposal the operator just declined gets re-flagged and re-drafted immediately, re-litigating the same decision. | A note rejected "for now" stays invisible long after the operator would welcome it back into triage.                                              | `memory-dream triage --suppress-rejected-days`, env, or config. |
 
+Successful applications supersede earlier rejections for the same project and
+path, even when `SUPPRESS_APPLIED_DAYS` is zero or shorter than the rejection
+window. Apply appends this evidence to `rejections.json`'s `supersessions` list;
+original rejection entries remain intact. All-approved passes record successful
+decisions too, including paths with no rejection history, so a delayed older
+writer cannot make its rejection current again. Ordering uses each apply's
+`recorded_at` start timestamp, not ledger append order. A later (or same-time)
+rejection still wins, and skipped, failed, left, or merely approved proposals do not supersede
+anything. Keep this sibling ledger when pruning dated pass directories. Ledger
+updates use a sibling `rejections.json.lock`, independent of each patch set's
+apply lock. Write failures and lock contention remain advisory: the ledger
+stays unchanged and apply warns, rather than overwriting another decision. Live
+file application and advisory ledger recording are not one atomic transaction.
+Applications made before supersession recording was
+introduced cannot be inferred from the ledger; those rejections expire normally.
+
 ## Index budget
 
 | Name                    | Default        | Controls                                                                            | Provenance                                                                                                                                                    | Too low                                                                                   | Too high                                                                                                                        | Override                                                                                                        |
