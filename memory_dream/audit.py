@@ -1575,6 +1575,125 @@ def strip_dead_index_fragments(line: str, dead: set[str]) -> str:
     return rebuilt + newline
 
 
+def detect_index_format(index_text: str) -> dict[str, Any]:
+    """Infer an append-only style without interpreting or rewriting custom hooks.
+
+    Only simple, sole-target local Markdown bullets vote. Repeated targets do
+    not manufacture a majority, and unsupported/packed entries count against
+    confidence. Three distinct examples and 80% support are deliberately
+    conservative: insufficient evidence keeps the established canonical form.
+    Returned diagnostics contain counts and format names, never note text.
+    """
+    entries: list[tuple[str | None, str | None, int]] = []
+    target_counts: Counter[str] = Counter()
+    pattern = re.compile(
+        r"^- \[(?P<label>[^\[\]\r\n]+)\]"
+        r"\((?P<target>[^()\[\]\s<>#%\\]+\.md)\)"
+        r"(?P<sep>: | — )(?P<hook>\S(?:.*\S)?)$"
+    )
+    fence = ""
+    for line in index_text.splitlines():
+        marker = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+        if marker:
+            if not fence:
+                fence = marker[1]
+            elif (
+                marker[1][0] == fence[0] and len(marker[1]) >= len(fence)
+                and line.strip() == marker[1]
+            ):
+                fence = ""
+            continue
+        if fence or not re.match(r"^\s*(?:[-+*]|\d+[.)])\s", line):
+            continue
+        links = list(LINK_RE.finditer(line))
+        local_links = []
+        for link in links:
+            target = link["target"]
+            if target.startswith("<") and target.endswith(">"):
+                target = target[1:-1]
+            if not re.match(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)", unquote(target)):
+                local_links.append(link[0])
+        targets, escaping = index_targets("".join(local_links))
+        if not targets and not escaping:
+            continue
+        target_counts.update(targets)
+        match = pattern.fullmatch(line)
+        rel = next(iter(targets)) if len(targets) == 1 and not escaping else None
+        if (
+            match is None or rel is None or match["target"] != rel
+            or ":" in rel or len(links) != 1
+            or match["label"] != match["label"].strip()
+        ):
+            entries.append((rel, None, 0))
+            continue
+        label = match["label"]
+        title = label != Path(rel).stem and (
+            any(char.isspace() for char in label) or label != label.lower()
+        )
+        dash = match["sep"] == " — "
+        if title:
+            style = "title-dash" if dash else "title-colon"
+        else:
+            style = "name-dash" if dash else "canonical"
+        entries.append((rel, style, len(match["hook"].encode("utf-8"))))
+    votes = Counter(
+        style for rel, style, _budget in entries
+        if style is not None and target_counts[rel] == 1
+    )
+    recognized = sum(votes.values())
+    unrecognized = len(entries) - recognized
+    selected = None
+    if votes:
+        leader, count = votes.most_common(1)[0]
+        if count >= 3 and count * 5 >= len(entries) * 4:
+            selected = leader
+    budget = None
+    if selected is not None and selected != "canonical":
+        budget = max(
+            size for rel, style, size in entries
+            if style == selected and target_counts[rel] == 1
+        )
+    return {
+        "format": selected, "mixed": len(votes) > 1 or unrecognized > 0,
+        "recognized": recognized, "unrecognized": unrecognized, "hook_bytes": budget,
+    }
+
+
+def _index_hook_prefix(description: str, budget: int) -> str:
+    """A literal, visibly incomplete prefix; never paraphrase or split a word.
+
+    If even the first complete word plus the marker cannot fit, retain the
+    description. The existing overall index cap remains the authority; an
+    empty hook would save bytes by throwing away every routing clue.
+    """
+    if len(description.encode("utf-8")) <= budget:
+        return description
+    suffix = "…"
+    available = budget - len(suffix.encode("utf-8"))
+    if available <= 0:
+        return description
+    prefix = ""
+    for word in re.finditer(r"\S+", description):
+        candidate = description[:word.end()]
+        if len(candidate.encode("utf-8")) > available:
+            break
+        prefix = candidate
+    return prefix + suffix if prefix else description
+
+
+def _appended_index_line(name: str, description: str, rel: str, style: dict[str, Any]) -> str:
+    """Style fresh entries only; canonical rendering remains the refresh guard."""
+    selected = style["format"]
+    if selected is None or selected == "canonical" or not description:
+        return index_entry_line(name, description, rel)
+    label = name
+    if selected.startswith("title-"):
+        label = re.sub(r"[-_]+", " ", name).strip() or name
+        label = label[:1].upper() + label[1:]
+    separator = " — " if selected.endswith("-dash") else ": "
+    return f"- [{label}]({rel}){separator}{_index_hook_prefix(description, style['hook_bytes'])}"
+
+
 def render_index_reconcile(
     index_text: str, memory_dir: Path, reconcile: dict[str, Any], content_by_rel: dict[str, str] | None = None
 ) -> str:
@@ -1584,6 +1703,9 @@ def render_index_reconcile(
     lets the assembler preview an appended entry for a not-yet-written survivor using
     its drafted frontmatter, so the preview matches what apply will produce."""
     content_by_rel = content_by_rel or {}
+    # Infer from the unchanged source index, before drops or appends, so preview
+    # and apply use the same evidence even when a source note is deleted.
+    style = detect_index_format(index_text)
     gone = set(reconcile["dropped"])
     fragment_gone = set(reconcile.get("fragment_dropped", []))
     kept: list[str] = []
@@ -1602,9 +1724,7 @@ def render_index_reconcile(
             name, description = frontmatter_entry(content_by_rel[rel], rel)
         else:
             name, description = entry_fields(memory_dir / rel, rel)
-        # ": " separator, not an em dash; a '#' inside description is literal
-        # markdown text here, not a YAML comment.
-        appended.append(index_entry_line(name, description, rel) + "\n")
+        appended.append(_appended_index_line(name, description, rel, style) + "\n")
     if appended:
         if result and not result.endswith("\n"):
             result += "\n"
