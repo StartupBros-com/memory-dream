@@ -10,7 +10,6 @@ accept. Nothing here depends on any such tool being installed.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -20,14 +19,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _clean_env(claude_config_dir: Path) -> dict:
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith(("MEMORY_DREAM_", "CLAUDE_MEMORY_")) and key != "CLAUDE_JOB_DIR"
-    }
-    env["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
-    return env
+# Preserve the local helper name while sharing the exact isolation policy.
+from _env_support import subprocess_env as _clean_env
 
 
 def _run(record_overrides: list[dict], suite_id: str = "s1", fingerprint: str = "f1") -> dict:
