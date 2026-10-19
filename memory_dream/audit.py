@@ -518,27 +518,12 @@ def inbound_index(records: dict[str, dict[str, Any]]) -> dict[str, set[str]]:
     resolution the auditor uses for wikilink_typo, so a link resolves only when
     exactly one note owns its canonical form.
     """
-    stems = {record["stem"] for record in records.values()}
-    names = {record["name"] for record in records.values() if record["name"]}
-    by_canon = project_by_canon(stems, names)
-    token_to_rel: dict[str, set[str]] = {}
-    for rel, record in records.items():
-        token_to_rel.setdefault(record["stem"], set()).add(rel)
-        if record["name"]:
-            token_to_rel.setdefault(record["name"], set()).add(rel)
+    by_canon, token_to_rel = link_resolver(records)
     index: dict[str, set[str]] = {rel: set() for rel in records}
     for source, record in records.items():
         for match in WIKILINK_RE.finditer(record["body"]):
-            link = match.group(1)
-            key = canon(re.sub(r"\s+", "", link) if "\n" in link else link)
-            candidates = by_canon.get(key, set())
-            if len(candidates) != 1:
-                continue
-            targets = token_to_rel.get(next(iter(candidates)), set())
-            if len(targets) != 1:
-                continue
-            target = next(iter(targets))
-            if target != source:
+            target = resolve_link(match.group(1), by_canon, token_to_rel)
+            if target is not None and target != source:
                 index[target].add(source)
     return index
 
