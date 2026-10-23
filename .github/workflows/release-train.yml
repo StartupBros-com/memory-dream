@@ -15,4 +15,4 @@ permissions:
 
 jobs:
   announce:
-    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@66e197874fe627f3d5f58dff49737e7747d20bfe # fix: retry the promotion-propagation 403
+    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@41bb6f811f1c1ad65f62c1ef32e696c60fb1d8c3 # feat: prefix-aware announce guard, card-source helper, prefix-scoped releases
