@@ -796,7 +796,10 @@ class SplitRedescribeTests(unittest.TestCase):
             for result in proposal["results"]:
                 # Every resulting file inherits the split note's schema frontmatter.
                 self.assertIn("node_type: memory", result["content"])
-                self.assertIn("originSessionId: sess-mega", result["content"])
+                if result["path"] == "mega.md":
+                    self.assertIn("originSessionId: sess-mega", result["content"])
+                else:
+                    self.assertNotIn("originSessionId:", result["content"])
             gotcha = proposal["results"][1]["content"]
             self.assertIn("name: gotcha", gotcha)
             self.assertIn("type: reference", gotcha)  # drafter's type honored
@@ -991,6 +994,144 @@ class SplitRedescribeTests(unittest.TestCase):
             self.assertIn("-- [mega](mega.md): old hook that no longer routes", diff)
 
 
+class SurvivorIndexWarningTests(unittest.TestCase):
+    """Changed split/compress descriptions must not silently miss index routing."""
+
+    _project = AssembleTests._project
+    _cluster = AssembleTests._cluster
+    OLD_DESCRIPTION = "old hook that no longer routes"
+    NEW_DESCRIPTION = "core topic after the split rewrite"
+    CUSTOM = "- [hand-written title](mega.md) — original operator hook\n"
+    PACKED = "- Packed: [Mega](mega.md) old hook; [Other](other.md) other topic\n"
+
+    def _build(self, root, action, index, description=None):
+        live_root, live = self._project(root, {
+            "mega.md": SplitRedescribeTests.DONOR,
+            "other.md": note("other", body="Other fact."),
+        })
+        (live / "MEMORY.md").write_text(index, encoding="utf-8", newline="\n")
+        cluster = self._cluster(["mega.md"], live)
+        draft = SplitRedescribeTests()._split_draft()
+        draft["action"] = action
+        if action == "compress":
+            draft.pop("extracts")
+            draft["survivor"]["content"] = draft["survivor"]["content"].replace(
+                "Core topic. See [[gotcha]] and [[sizing]].", "Core topic."
+            )
+        if description is not None:
+            draft["survivor"]["content"] = draft["survivor"]["content"].replace(
+                self.NEW_DESCRIPTION, description
+            )
+        (root / "plan.json").write_text(json.dumps({
+            "schema_version": 1, "clusters": [cluster],
+            "deferred": [], "manual_review": [],
+        }), encoding="utf-8", newline="\n")
+        (root / "drafts.json").write_text(json.dumps({
+            "clusters": [{"cluster_id": cluster["cluster_id"], "proposals": [draft]}],
+        }), encoding="utf-8", newline="\n")
+        out = root / "logs" / "pass"
+        result = run_cli(
+            "build", "--live-root", str(live_root),
+            "--plan", str(root / "plan.json"), "--drafts", str(root / "drafts.json"),
+            "--out", str(out), "--created-at-line", "0",
+            "--findings", str(write_findings(root)), "--stamp", "2026-07-31",
+            env=subprocess_env(root / "claude-config"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["dropped"], [])
+        self.assertEqual(len(manifest["proposals"]), 1)
+        self.assertEqual(report["redescribe_index_warnings"], [])
+        # Build and its diagnostics never mutate the live fixture.
+        self.assertEqual((live / "MEMORY.md").read_text(encoding="utf-8"), index)
+        self.assertEqual((live / "mega.md").read_text(encoding="utf-8"), SplitRedescribeTests.DONOR)
+        projected = ASM.anticipated_index_texts(live, manifest["proposals"])
+        return result, report, projected[1] if projected else index, out
+
+    def test_warns_for_preserved_custom_survivor_hook(self):
+        for action in ("split", "compress"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as temp:
+                result, report, projected, out = self._build(Path(temp), action, self.CUSTOM)
+                self.assertEqual(report.get("survivor_index_warnings", []), [{
+                    "project": "proj", "path": "mega.md", "action": action,
+                    "kind": "custom-line-only",
+                }])
+                self.assertIn(f"WARN {action} proj/mega.md", result.stderr)
+                self.assertIn("description", result.stderr)
+                self.assertIn(self.CUSTOM, projected)
+                self.assertNotIn(self.NEW_DESCRIPTION, projected)
+                if action == "split":
+                    self.assertIn("- [gotcha](gotcha.md):", projected)
+                else:
+                    self.assertFalse((out / "index-proj.diff").exists())
+
+    def test_warns_for_preserved_packed_survivor_hook(self):
+        for action in ("split", "compress"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as temp:
+                result, report, projected, _out = self._build(Path(temp), action, self.PACKED)
+                self.assertEqual(report.get("survivor_index_warnings", []), [{
+                    "project": "proj", "path": "mega.md", "action": action,
+                    "kind": "packed-line-only",
+                }])
+                self.assertIn(f"WARN {action} proj/mega.md", result.stderr)
+                self.assertIn(self.PACKED, projected)
+
+    def test_no_warning_when_canonical_hook_refreshes(self):
+        index = audit.index_entry_line("mega", self.OLD_DESCRIPTION, "mega.md") + "\n"
+        for action in ("split", "compress"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as temp:
+                result, report, projected, _out = self._build(Path(temp), action, index)
+                self.assertEqual(report.get("survivor_index_warnings", []), [])
+                self.assertNotIn(f"WARN {action} proj/mega.md", result.stderr)
+                self.assertIn(self.NEW_DESCRIPTION, projected)
+                self.assertNotIn(self.OLD_DESCRIPTION, projected)
+
+    def test_no_warning_for_unchanged_descriptions(self):
+        for action in ("split", "compress"):
+            for index in (self.CUSTOM, self.PACKED):
+                with self.subTest(action=action, index=index), tempfile.TemporaryDirectory() as temp:
+                    result, report, projected, _out = self._build(
+                        Path(temp), action, index, description=self.OLD_DESCRIPTION
+                    )
+                    self.assertEqual(report.get("survivor_index_warnings", []), [])
+                    self.assertNotIn(f"WARN {action} proj/mega.md", result.stderr)
+                    self.assertIn(index, projected)
+
+    def test_no_warning_when_description_already_in_target_hook(self):
+        for description in (self.NEW_DESCRIPTION, self.NEW_DESCRIPTION + "; specific routing detail"):
+            fresh = f"- [operator title](mega.md) — {description}; manual annotation\n"
+            for action in ("split", "compress"):
+                for index in (fresh, fresh.rstrip() + "; [Other](other.md) other topic\n"):
+                    with self.subTest(action=action, index=index), tempfile.TemporaryDirectory() as temp:
+                        result, report, projected, _out = self._build(
+                            Path(temp), action, index, description=description
+                        )
+                        self.assertEqual(report.get("survivor_index_warnings", []), [])
+                        self.assertNotIn(f"WARN {action} proj/mega.md", result.stderr)
+                        self.assertIn(index, projected)
+
+    def test_other_packed_target_description_does_not_hide_warning(self):
+        index = self.PACKED.replace("other topic", self.NEW_DESCRIPTION)
+        for action in ("split", "compress"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as temp:
+                _result, report, _projected, _out = self._build(Path(temp), action, index)
+                self.assertEqual(report.get("survivor_index_warnings", []), [{
+                    "project": "proj", "path": "mega.md", "action": action,
+                    "kind": "packed-line-only",
+                }])
+
+    def test_no_warning_when_fresh_route_exists_elsewhere(self):
+        canonical = audit.index_entry_line("mega", self.OLD_DESCRIPTION, "mega.md") + "\n"
+        for action in ("split", "compress"):
+            for index in ("# Empty index\n", self.PACKED + canonical):
+                with self.subTest(action=action, index=index), tempfile.TemporaryDirectory() as temp:
+                    result, report, projected, _out = self._build(Path(temp), action, index)
+                    self.assertEqual(report.get("survivor_index_warnings", []), [])
+                    self.assertNotIn(f"WARN {action} proj/mega.md", result.stderr)
+                    self.assertIn(self.NEW_DESCRIPTION, projected)
+
+
 class HardeningTests(unittest.TestCase):
     """Findings gate (verification coverage + content-binding), index-growth
     refusal, decay-frontmatter stamping, and casing-drift lint enforcement."""
@@ -1084,6 +1225,70 @@ class HardeningTests(unittest.TestCase):
             result = self._build_cli(root, live_root, root / "out")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((root / "out" / "manifest.json").exists())
+
+    def test_build_reports_drafted_cluster_missing_from_selected_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live_root, cluster = self._compress_setup(root, note("a", body="Fact."))
+            write_findings(root)
+            selected_plan = root / "other plan.json"
+            selected_plan.write_text(
+                json.dumps({"clusters": []}), encoding="utf-8", newline="\n"
+            )
+            out = root / "out"
+            result = self._build_cli(
+                root, live_root, out, extra=("--plan", str(selected_plan))
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(
+                f"drafted cluster(s) not in plan {selected_plan}: {cluster['cluster_id']}",
+                result.stderr,
+            )
+            self.assertIn(
+                "drafts and plan come from different plan runs", result.stderr
+            )
+            self.assertNotIn("source notes changed since plan", result.stderr)
+            self.assertFalse(out.exists())
+            self.assertFalse((out / "manifest.json").exists())
+
+    def test_build_reports_missing_plan_clusters_and_source_drift_separately(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live_root, cluster = self._compress_setup(root, note("a", body="Fact."))
+            drafts_path = root / "drafts.json"
+            drafts = json.loads(drafts_path.read_text(encoding="utf-8"))
+            original = drafts["clusters"][0]
+            drafts["clusters"] = [
+                {**original, "cluster_id": "missing-z"},
+                original,
+                {**original, "cluster_id": "missing-a"},
+            ]
+            (live_root / "proj" / "memory" / "a.md").write_text(
+                note("a", body="Changed after plan."), encoding="utf-8", newline="\n"
+            )
+            for entries in (drafts["clusters"], list(reversed(drafts["clusters"]))):
+                with self.subTest(order=[entry["cluster_id"] for entry in entries]):
+                    drafts_path.write_text(
+                        json.dumps({"clusters": entries}),
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    write_findings(root)
+                    out = root / "out"
+                    result = self._build_cli(root, live_root, out)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(
+                        result.stderr.splitlines(),
+                        [
+                            f"memory-dream: drafted cluster(s) not in plan {root / 'plan.json'}: "
+                            "missing-a, missing-z; drafts and plan come from different plan runs; "
+                            "select the matching --plan file",
+                            "memory-dream: source notes changed since plan; re-run "
+                            f"plan+verification (cluster(s): {cluster['cluster_id']})",
+                        ],
+                    )
+                    self.assertFalse(out.exists())
+                    self.assertFalse((out / "manifest.json").exists())
 
     def test_build_refuses_when_source_note_changed_since_plan(self):
         # The findings gate above only binds the drafted PROPOSALS
