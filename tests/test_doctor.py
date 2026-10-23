@@ -47,7 +47,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from memory_dream import cli, config, transcript  # noqa: E402
+from memory_dream import cli, compat, config, transcript  # noqa: E402
 
 # --- Environment isolation helpers ------------------------------------------
 # Duplicated from test_extraction_surfaces.py: used by both files' remaining
@@ -943,6 +943,39 @@ class DoctorReadinessLineTests(unittest.TestCase):
             self.assertTrue(line.startswith("ok"), line)
             self.assertIn(f"{triage_summary['flagged']} note(s) flagged", line)
             self.assertIn(f"{triage_summary['live_projects']} project(s)", line)
+
+    def test_streak_lock_contention_keeps_readiness_and_saved_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            claude_dir = root / "claude-config"
+            memory_dir = claude_dir / "projects" / "proj" / "memory"
+            memory_dir.mkdir(parents=True)
+            (memory_dir / "MEMORY.md").write_text("- [Log](log.md)\n", encoding="utf-8")
+            (memory_dir / "log.md").write_text(note("log", body="z" * 6500), encoding="utf-8")
+            pass_root = root / "passes"
+            (pass_root / "p2").mkdir(parents=True)
+            (pass_root / "p2" / "report.json").write_text(
+                json.dumps({"deferred": []}), encoding="utf-8",
+            )
+            streak_path = pass_root / "deferral-streaks.json"
+            saved = json.dumps({
+                "schema_version": 1, "last_pass_id": "p1", "streaks": [
+                    {"kind": "path", "project": "proj", "path": "log.md",
+                     "reason": "cluster-size-cap", "count": 2},
+                ],
+            }).encode("utf-8")
+            streak_path.write_bytes(saved)
+            env = subprocess_env(claude_dir)
+            env["MEMORY_DREAM_PASS_ROOT"] = str(pass_root)
+            with compat.FileLock(pass_root / "deferral-streaks.json.lock"):
+                result = run_cli("doctor", cwd=REPO_ROOT, env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                line = _doctor_line(result.stdout, "readiness")
+                self.assertIn("1 note(s) flagged", line)
+                self.assertTrue(line.startswith("ok"), line)
+                self.assertIn("WARNING", result.stderr)
+                self.assertIn("deferral-streaks.json.lock", result.stderr)
+                self.assertEqual(streak_path.read_bytes(), saved)
 
 
 # =============================================================================
