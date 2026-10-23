@@ -796,7 +796,10 @@ class SplitRedescribeTests(unittest.TestCase):
             for result in proposal["results"]:
                 # Every resulting file inherits the split note's schema frontmatter.
                 self.assertIn("node_type: memory", result["content"])
-                self.assertIn("originSessionId: sess-mega", result["content"])
+                if result["path"] == "mega.md":
+                    self.assertIn("originSessionId: sess-mega", result["content"])
+                else:
+                    self.assertNotIn("originSessionId:", result["content"])
             gotcha = proposal["results"][1]["content"]
             self.assertIn("name: gotcha", gotcha)
             self.assertIn("type: reference", gotcha)  # drafter's type honored
