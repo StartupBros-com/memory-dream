@@ -974,9 +974,11 @@ class TriageSuppressionTests(unittest.TestCase):
             pass_dir = root / "passes" / "20260101-000000"
             pass_dir.mkdir(parents=True)
             (pass_dir / "manifest.json").write_text(json.dumps(
-                {"proposals": [{"project": "proj", "results": [{"path": "big.md", "content": "x"}]}]}
+                {"proposals": [{"id": "p1", "project": "proj", "results": [{"path": "big.md", "content": "x"}]}]}
             ), encoding="utf-8", newline="\n")
-            (pass_dir / "apply-manifest.json").write_text("{}", encoding="utf-8", newline="\n")
+            (pass_dir / "apply-manifest.json").write_text(json.dumps({
+                "projects": [{"project": "proj", "proposals": [{"id": "p1", "status": "applied"}]}],
+            }), encoding="utf-8", newline="\n")
             claude_config_dir = root / "claude-config"
             claude_config_dir.mkdir()
             env = _clean_env(claude_config_dir)
@@ -1130,9 +1132,11 @@ class TriageRejectionSuppressionTests(unittest.TestCase):
             applied_dir = pass_root / "20260101-000000"
             applied_dir.mkdir(parents=True)
             (applied_dir / "manifest.json").write_text(json.dumps(
-                {"proposals": [{"project": "proj", "results": [{"path": "big.md", "content": "x"}]}]}
+                {"proposals": [{"id": "p1", "project": "proj", "results": [{"path": "big.md", "content": "x"}]}]}
             ), encoding="utf-8", newline="\n")
-            (applied_dir / "apply-manifest.json").write_text("{}", encoding="utf-8", newline="\n")
+            (applied_dir / "apply-manifest.json").write_text(json.dumps({
+                "projects": [{"project": "proj", "proposals": [{"id": "p1", "status": "applied"}]}],
+            }), encoding="utf-8", newline="\n")
             now = dt.date(2026, 7, 17)
             recent = (now - dt.timedelta(days=1)).isoformat() + "T00:00:00+00:00"
             _write_rejections(pass_root, [
