@@ -18,9 +18,9 @@ unverifiable finding means; this gate only makes the fact visible. Every
 code path here returns 0, including a malformed input file (reported to
 stderr, left untouched on disk).
 
-Input/output shape (round-tripped in place; every original field is
-preserved, only ``quote_checked``/``unverified_quote`` are added or
-overwritten on each finding):
+Input/output shape (round-tripped in place; every original non-verification
+field is preserved, while ``quote_checked``/``unverified_quote`` are replaced
+with the current check's stamps on each finding):
 
     {"files": [{"path": "rel/note.md", "findings": [
         {"severity": "high", "claim": "...", "problem": "...", "fix": "...",
@@ -162,6 +162,8 @@ def verify_findings_payload(data: Any, root: Path) -> tuple[Any, int, int]:
                     if isinstance(path, str):
                         content_cache[path] = normalized_content
                 stamps = _stamps_for(normalized_content, quote)
+            # Success omits the failure marker, including one from a prior run.
+            item.pop("unverified_quote", None)
             item.update(stamps)
             checked += 1
             if stamps.get("unverified_quote"):
