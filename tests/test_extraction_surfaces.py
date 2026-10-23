@@ -37,25 +37,9 @@ if str(REPO_ROOT) not in sys.path:
 from memory_dream import audit as AUDIT  # noqa: E402
 from memory_dream import compat, config, transcript  # noqa: E402
 
-# --- Environment isolation helpers ------------------------------------------
-
-_ENV_PREFIXES_TO_STRIP = ("MEMORY_DREAM_", "CLAUDE_MEMORY_")
-_ENV_EXACT_TO_STRIP = ("CLAUDE_JOB_DIR",)
-
-
-def _strip_leaky_keys(env: dict) -> dict:
-    return {
-        key: value
-        for key, value in env.items()
-        if not key.startswith(_ENV_PREFIXES_TO_STRIP) and key not in _ENV_EXACT_TO_STRIP
-    }
-
-
-def subprocess_env(claude_config_dir: Path) -> dict:
-    """env = {**os.environ minus leaky keys, CLAUDE_CONFIG_DIR: <tmp>}."""
-    env = _strip_leaky_keys(os.environ)
-    env["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
-    return env
+# Dedicated support module: share the policy without importing another test suite.
+from _env_support import strip_leaky_keys as _strip_leaky_keys  # noqa: E402
+from _env_support import subprocess_env  # noqa: E402
 
 
 def run_cli(*args: str, cwd: Path = REPO_ROOT, env: dict) -> subprocess.CompletedProcess:

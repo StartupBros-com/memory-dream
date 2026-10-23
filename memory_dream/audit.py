@@ -718,9 +718,11 @@ def triage_project(project: str, memory_dir: Path, now: dt.date) -> tuple[int, l
 def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     """(project, path) pairs an APPLIED dream pass touched within the window.
 
-    Reads applied patch-set manifests so both triage and the planner can skip
-    consolidation-refire flags (size and supersession-language heuristics fire
-    on notes already in their durable form)."""
+    Joins explicit applied outcomes to proposals by (project, proposal id),
+    never by manifest existence or project-level success alone. Both triage
+    and the planner use this to avoid consolidation-refire flags on notes
+    already in their durable form. Missing or malformed evidence cannot
+    establish that a proposal was applied."""
     recently_applied: set[tuple[str, str]] = set()
     pass_root = config.pass_root()
     cutoff = dt.date.fromordinal(now.toordinal() - days)
@@ -729,25 +731,51 @@ def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     for patch_dir in pass_root.iterdir():
         apply_manifest = patch_dir / "apply-manifest.json"
         manifest = patch_dir / "manifest.json"
-        if not (apply_manifest.is_file() and manifest.is_file()):
-            continue
-        if dt.date.fromtimestamp(apply_manifest.stat().st_mtime) < cutoff:
-            continue
         try:
-            proposals = json.loads(manifest.read_text(encoding="utf-8"))["proposals"]
-        except (json.JSONDecodeError, KeyError, OSError):
+            if not (apply_manifest.is_file() and manifest.is_file()):
+                continue
+            if dt.date.fromtimestamp(apply_manifest.stat().st_mtime) < cutoff:
+                continue
+            outcome_payload = json.loads(apply_manifest.read_text(encoding="utf-8"))
+            proposal_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeError, OSError):
             continue
+        projects = outcome_payload.get("projects") if isinstance(outcome_payload, dict) else None
+        proposals = proposal_payload.get("proposals") if isinstance(proposal_payload, dict) else None
+        if not isinstance(projects, list) or not isinstance(proposals, list):
+            continue
+        applied: set[tuple[str, str]] = set()
+        for entry in projects:
+            if not isinstance(entry, dict):
+                continue
+            project = entry.get("project")
+            statuses = entry.get("proposals")
+            if not isinstance(project, str) or not project or not isinstance(statuses, list):
+                continue
+            for status in statuses:
+                if not isinstance(status, dict) or status.get("status") != "applied":
+                    continue
+                pid = status.get("id")
+                if isinstance(pid, str) and pid:
+                    applied.add((project, pid))
         for proposal in proposals:
-            project = proposal.get("project", "")
-            for result_file in proposal.get("results") or []:
-                if isinstance(result_file, dict) and result_file.get("path"):
-                    recently_applied.add((project, result_file["path"]))
+            if not isinstance(proposal, dict):
+                continue
+            project, pid = proposal.get("project"), proposal.get("id")
+            if not isinstance(project, str) or not isinstance(pid, str) or (project, pid) not in applied:
+                continue
+            results = proposal.get("results")
+            if isinstance(results, list):
+                for result_file in results:
+                    path = result_file.get("path") if isinstance(result_file, dict) else None
+                    if isinstance(path, str) and path:
+                        recently_applied.add((project, path))
             # Early-wave manifests store survivor as a bare path string.
             survivor = proposal.get("survivor")
+            if isinstance(survivor, dict):
+                survivor = survivor.get("path")
             if isinstance(survivor, str) and survivor:
                 recently_applied.add((project, survivor))
-            elif isinstance(survivor, dict) and survivor.get("path"):
-                recently_applied.add((project, survivor["path"]))
     return recently_applied
 
 
@@ -755,6 +783,41 @@ def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
 # imported) because apply.py already imports this module (`from memory_dream
 # import audit as AUDIT`); importing apply.py back would be circular.
 REJECTIONS_FILENAME = "rejections.json"
+
+
+def _decision_timestamp(value: Any) -> dt.datetime | None:
+    """A comparable ledger timestamp, or no evidence of decision ordering.
+
+    Producers record timezone-aware ISO timestamps. Do not guess a timezone
+    for malformed/legacy naive values when deciding to silence a rejection.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else None
+
+
+def _latest_supersessions(payload: dict[str, Any]) -> dict[tuple[str, str], dt.datetime]:
+    latest: dict[tuple[str, str], dt.datetime] = {}
+    entries = payload.get("supersessions")
+    if not isinstance(entries, list):
+        return latest
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        stamp = _decision_timestamp(entry.get("recorded_at"))
+        project, paths = entry.get("project"), entry.get("paths")
+        if stamp is None or not isinstance(project, str) or not isinstance(paths, list):
+            continue
+        for path in paths:
+            if isinstance(path, str):
+                key = (project, path)
+                if key not in latest or stamp > latest[key]:
+                    latest[key] = stamp
+    return latest
 
 
 def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
@@ -774,7 +837,9 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     Unlike recently_applied_paths (patch-set-manifest mtime windowing),
     rejections.json is append-only and every entry carries its own
     ``recorded_at`` ISO timestamp, so windowing here is per-entry rather than
-    per-file.
+    per-file. Successful applications recorded in ``supersessions`` invalidate
+    only earlier rejections for the same (project, path). These durable
+    records do not expire with the independent applied-suppression window.
     """
     recently_rejected: set[tuple[str, str]] = set()
     path = config.pass_root() / REJECTIONS_FILENAME
@@ -787,6 +852,7 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     entries = payload.get("entries") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
         return recently_rejected
+    supersessions = _latest_supersessions(payload)
     cutoff = dt.date.fromordinal(now.toordinal() - days)
     for entry in entries:
         if not isinstance(entry, dict):
@@ -803,9 +869,14 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
         project = entry.get("project")
         if not isinstance(project, str):
             continue
+        rejected_at = _decision_timestamp(recorded_at)
         for path_value in entry.get("paths") or []:
             if isinstance(path_value, str):
-                recently_rejected.add((project, path_value))
+                key = (project, path_value)
+                applied_at = supersessions.get(key)
+                if rejected_at is not None and applied_at is not None and applied_at > rejected_at:
+                    continue
+                recently_rejected.add(key)
     return recently_rejected
 
 
@@ -906,7 +977,22 @@ def update_deferral_streaks() -> list[dict[str, Any]]:
     count incremented (or starts at 1); any key that was tracked but is
     absent from the newest pass resets -- its record is dropped, matching
     "consecutive passes deferred" semantics.
+
+    The sibling lock covers both reads and the atomic replacement. On
+    contention or lock setup failure, return saved streaks without writing;
+    a later triage/doctor run can advance the pending newest pass.
     """
+    root = config.pass_root()
+    try:
+        with compat.FileLock(root / (DEFERRAL_STREAKS_FILENAME + ".lock")):
+            return _update_deferral_streaks_locked()
+    except (compat.LockHeld, OSError) as error:
+        print(f"memory-dream triage: WARNING could not update {DEFERRAL_STREAKS_FILENAME}: {error}", file=sys.stderr)
+        return _load_deferral_streaks()["streaks"]
+
+
+def _update_deferral_streaks_locked() -> list[dict[str, Any]]:
+    """Read, advance and persist streaks while the caller holds their lock."""
     data = _load_deferral_streaks()
     newest = _newest_pass_report(config.pass_root())
     if newest is None:
@@ -1354,6 +1440,30 @@ def preserve_metadata(
     return "".join(lines) + drafter_body
 
 
+def strip_note_identity(content: str) -> str:
+    """Omit originSessionId/modified on a NEW note, preserving all other bytes.
+
+    Accept the same flat and nested metadata layouts as parse_frontmatter.
+    Do not touch the body or identically named fields in other schema blocks.
+    Call after metadata preservation so its donor/fallback cannot restore them.
+    """
+    frontmatter, body = split_frontmatter_raw(content)
+    if not frontmatter:
+        return content
+    kept = []
+    in_metadata = False
+    for line in frontmatter.splitlines(keepends=True):
+        match = re.match(r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_.-]+)\s*:", line)
+        if match:
+            indent, key = match.group("indent"), match.group("key")
+            if not indent:
+                in_metadata = key == "metadata"
+            if key in ("originSessionId", "modified") and (not indent or in_metadata):
+                continue
+        kept.append(line)
+    return "".join(kept) + body
+
+
 def content_tokens(value: str) -> set[str]:
     """Content-word token set for description-similarity checks (recall is routed
     by these one-liners, so two near-identical descriptions cannot be told apart).
@@ -1575,6 +1685,125 @@ def strip_dead_index_fragments(line: str, dead: set[str]) -> str:
     return rebuilt + newline
 
 
+def detect_index_format(index_text: str) -> dict[str, Any]:
+    """Infer an append-only style without interpreting or rewriting custom hooks.
+
+    Only simple, sole-target local Markdown bullets vote. Repeated targets do
+    not manufacture a majority, and unsupported/packed entries count against
+    confidence. Three distinct examples and 80% support are deliberately
+    conservative: insufficient evidence keeps the established canonical form.
+    Returned diagnostics contain counts and format names, never note text.
+    """
+    entries: list[tuple[str | None, str | None, int]] = []
+    target_counts: Counter[str] = Counter()
+    pattern = re.compile(
+        r"^- \[(?P<label>[^\[\]\r\n]+)\]"
+        r"\((?P<target>[^()\[\]\s<>#%\\]+\.md)\)"
+        r"(?P<sep>: | — )(?P<hook>\S(?:.*\S)?)$"
+    )
+    fence = ""
+    for line in index_text.splitlines():
+        marker = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+        if marker:
+            if not fence:
+                fence = marker[1]
+            elif (
+                marker[1][0] == fence[0] and len(marker[1]) >= len(fence)
+                and line.strip() == marker[1]
+            ):
+                fence = ""
+            continue
+        if fence or not re.match(r"^\s*(?:[-+*]|\d+[.)])\s", line):
+            continue
+        links = list(LINK_RE.finditer(line))
+        local_links = []
+        for link in links:
+            target = link["target"]
+            if target.startswith("<") and target.endswith(">"):
+                target = target[1:-1]
+            if not re.match(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)", unquote(target)):
+                local_links.append(link[0])
+        targets, escaping = index_targets("".join(local_links))
+        if not targets and not escaping:
+            continue
+        target_counts.update(targets)
+        match = pattern.fullmatch(line)
+        rel = next(iter(targets)) if len(targets) == 1 and not escaping else None
+        if (
+            match is None or rel is None or match["target"] != rel
+            or ":" in rel or len(links) != 1
+            or match["label"] != match["label"].strip()
+        ):
+            entries.append((rel, None, 0))
+            continue
+        label = match["label"]
+        title = label != Path(rel).stem and (
+            any(char.isspace() for char in label) or label != label.lower()
+        )
+        dash = match["sep"] == " — "
+        if title:
+            style = "title-dash" if dash else "title-colon"
+        else:
+            style = "name-dash" if dash else "canonical"
+        entries.append((rel, style, len(match["hook"].encode("utf-8"))))
+    votes = Counter(
+        style for rel, style, _budget in entries
+        if style is not None and target_counts[rel] == 1
+    )
+    recognized = sum(votes.values())
+    unrecognized = len(entries) - recognized
+    selected = None
+    if votes:
+        leader, count = votes.most_common(1)[0]
+        if count >= 3 and count * 5 >= len(entries) * 4:
+            selected = leader
+    budget = None
+    if selected is not None and selected != "canonical":
+        budget = max(
+            size for rel, style, size in entries
+            if style == selected and target_counts[rel] == 1
+        )
+    return {
+        "format": selected, "mixed": len(votes) > 1 or unrecognized > 0,
+        "recognized": recognized, "unrecognized": unrecognized, "hook_bytes": budget,
+    }
+
+
+def _index_hook_prefix(description: str, budget: int) -> str:
+    """A literal, visibly incomplete prefix; never paraphrase or split a word.
+
+    If even the first complete word plus the marker cannot fit, retain the
+    description. The existing overall index cap remains the authority; an
+    empty hook would save bytes by throwing away every routing clue.
+    """
+    if len(description.encode("utf-8")) <= budget:
+        return description
+    suffix = "…"
+    available = budget - len(suffix.encode("utf-8"))
+    if available <= 0:
+        return description
+    prefix = ""
+    for word in re.finditer(r"\S+", description):
+        candidate = description[:word.end()]
+        if len(candidate.encode("utf-8")) > available:
+            break
+        prefix = candidate
+    return prefix + suffix if prefix else description
+
+
+def _appended_index_line(name: str, description: str, rel: str, style: dict[str, Any]) -> str:
+    """Style fresh entries only; canonical rendering remains the refresh guard."""
+    selected = style["format"]
+    if selected is None or selected == "canonical" or not description:
+        return index_entry_line(name, description, rel)
+    label = name
+    if selected.startswith("title-"):
+        label = re.sub(r"[-_]+", " ", name).strip() or name
+        label = label[:1].upper() + label[1:]
+    separator = " — " if selected.endswith("-dash") else ": "
+    return f"- [{label}]({rel}){separator}{_index_hook_prefix(description, style['hook_bytes'])}"
+
+
 def render_index_reconcile(
     index_text: str, memory_dir: Path, reconcile: dict[str, Any], content_by_rel: dict[str, str] | None = None
 ) -> str:
@@ -1584,6 +1813,9 @@ def render_index_reconcile(
     lets the assembler preview an appended entry for a not-yet-written survivor using
     its drafted frontmatter, so the preview matches what apply will produce."""
     content_by_rel = content_by_rel or {}
+    # Infer from the unchanged source index, before drops or appends, so preview
+    # and apply use the same evidence even when a source note is deleted.
+    style = detect_index_format(index_text)
     gone = set(reconcile["dropped"])
     fragment_gone = set(reconcile.get("fragment_dropped", []))
     kept: list[str] = []
@@ -1602,9 +1834,7 @@ def render_index_reconcile(
             name, description = frontmatter_entry(content_by_rel[rel], rel)
         else:
             name, description = entry_fields(memory_dir / rel, rel)
-        # ": " separator, not an em dash; a '#' inside description is literal
-        # markdown text here, not a YAML comment.
-        appended.append(index_entry_line(name, description, rel) + "\n")
+        appended.append(_appended_index_line(name, description, rel, style) + "\n")
     if appended:
         if result and not result.endswith("\n"):
             result += "\n"
