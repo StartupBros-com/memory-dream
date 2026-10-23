@@ -33,6 +33,29 @@ entries, append unindexed notes, byte-for-byte format preservation). Because
 this layer can write live files, `--apply` goes through the same backup
 mechanism as the apply layer below before touching anything (see Gate 3).
 
+New index entries can follow an established simple bullet style: a literal
+name or humanized title, followed by a colon or em dash and a routing hook.
+Inference requires at least three distinct simple local-note entries and
+80% agreement among indexed list lines. Duplicate targets, packed links and
+unsupported list formats count against confidence; prose, headings,
+external links and fenced code examples do not vote. Empty or ambiguous
+indexes retain the canonical `- [name](file.md): description` append form.
+Mixed/unsupported styles produce an advisory `index_format_drift` record in
+the build report, containing structural counts rather than hook contents.
+
+Only appended entries use the inferred style. Existing custom entries and
+the canonical hand-edit detection used by refresh are unchanged. Titles
+replace name separators with spaces and capitalize the first character;
+they are not model-generated. For a noncanonical style, the longest
+supporting hook sets a UTF-8 byte budget. A longer description becomes a
+literal whole-word prefix with an explicit ellipsis. If no complete word
+and ellipsis fit, the full description is kept rather than an empty hook.
+The existing overall index-cap refusal still applies. Preview and apply
+use the same renderer, with equality conditional on the same source index
+and approved result set. The index itself is not separately digest-bound;
+editing it after preview can change the inferred append style and prefix.
+These formatting rules do not establish recall gains.
+
 ### Layer 2 — deterministic assemble and apply plumbing (`assemble.py`, `apply.py`)
 
 Still no model calls. This layer turns triage output and a subagent's drafts
