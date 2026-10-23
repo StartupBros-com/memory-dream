@@ -1307,7 +1307,7 @@ class ApplyRejectionRecordingTests(ApplyFixtureMixin, unittest.TestCase):
             expected_recorded_at = dt.datetime.fromtimestamp(1700000000, tz=dt.timezone.utc).isoformat()
             self.assertEqual(entry["recorded_at"], expected_recorded_at)
 
-    def test_all_approved_writes_no_rejections_file(self):
+    def test_all_approved_records_success_without_rejection_entries(self):
         with tempfile.TemporaryDirectory() as temp:
             harness = Harness(Path(temp))
             self._standard_project(harness)
@@ -1315,7 +1315,11 @@ class ApplyRejectionRecordingTests(ApplyFixtureMixin, unittest.TestCase):
             harness.write()
             result = harness.run(harness.selection(["p1"]))
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(self._rejections_path(harness).exists())
+            payload = json.loads(self._rejections_path(harness).read_text(encoding="utf-8"))
+            self.assertEqual(payload["entries"], [])
+            self.assertEqual(len(payload["supersessions"]), 1)
+            self.assertEqual(payload["supersessions"][0]["proposal_id"], "p1")
+            self.assertEqual(payload["supersessions"][0]["paths"], ["old.md"])
 
     def test_two_applies_append_entries_in_order(self):
         with tempfile.TemporaryDirectory() as temp:

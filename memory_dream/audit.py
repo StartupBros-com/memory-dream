@@ -718,9 +718,11 @@ def triage_project(project: str, memory_dir: Path, now: dt.date) -> tuple[int, l
 def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     """(project, path) pairs an APPLIED dream pass touched within the window.
 
-    Reads applied patch-set manifests so both triage and the planner can skip
-    consolidation-refire flags (size and supersession-language heuristics fire
-    on notes already in their durable form)."""
+    Joins explicit applied outcomes to proposals by (project, proposal id),
+    never by manifest existence or project-level success alone. Both triage
+    and the planner use this to avoid consolidation-refire flags on notes
+    already in their durable form. Missing or malformed evidence cannot
+    establish that a proposal was applied."""
     recently_applied: set[tuple[str, str]] = set()
     pass_root = config.pass_root()
     cutoff = dt.date.fromordinal(now.toordinal() - days)
@@ -729,25 +731,51 @@ def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     for patch_dir in pass_root.iterdir():
         apply_manifest = patch_dir / "apply-manifest.json"
         manifest = patch_dir / "manifest.json"
-        if not (apply_manifest.is_file() and manifest.is_file()):
-            continue
-        if dt.date.fromtimestamp(apply_manifest.stat().st_mtime) < cutoff:
-            continue
         try:
-            proposals = json.loads(manifest.read_text(encoding="utf-8"))["proposals"]
-        except (json.JSONDecodeError, KeyError, OSError):
+            if not (apply_manifest.is_file() and manifest.is_file()):
+                continue
+            if dt.date.fromtimestamp(apply_manifest.stat().st_mtime) < cutoff:
+                continue
+            outcome_payload = json.loads(apply_manifest.read_text(encoding="utf-8"))
+            proposal_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeError, OSError):
             continue
+        projects = outcome_payload.get("projects") if isinstance(outcome_payload, dict) else None
+        proposals = proposal_payload.get("proposals") if isinstance(proposal_payload, dict) else None
+        if not isinstance(projects, list) or not isinstance(proposals, list):
+            continue
+        applied: set[tuple[str, str]] = set()
+        for entry in projects:
+            if not isinstance(entry, dict):
+                continue
+            project = entry.get("project")
+            statuses = entry.get("proposals")
+            if not isinstance(project, str) or not project or not isinstance(statuses, list):
+                continue
+            for status in statuses:
+                if not isinstance(status, dict) or status.get("status") != "applied":
+                    continue
+                pid = status.get("id")
+                if isinstance(pid, str) and pid:
+                    applied.add((project, pid))
         for proposal in proposals:
-            project = proposal.get("project", "")
-            for result_file in proposal.get("results") or []:
-                if isinstance(result_file, dict) and result_file.get("path"):
-                    recently_applied.add((project, result_file["path"]))
+            if not isinstance(proposal, dict):
+                continue
+            project, pid = proposal.get("project"), proposal.get("id")
+            if not isinstance(project, str) or not isinstance(pid, str) or (project, pid) not in applied:
+                continue
+            results = proposal.get("results")
+            if isinstance(results, list):
+                for result_file in results:
+                    path = result_file.get("path") if isinstance(result_file, dict) else None
+                    if isinstance(path, str) and path:
+                        recently_applied.add((project, path))
             # Early-wave manifests store survivor as a bare path string.
             survivor = proposal.get("survivor")
+            if isinstance(survivor, dict):
+                survivor = survivor.get("path")
             if isinstance(survivor, str) and survivor:
                 recently_applied.add((project, survivor))
-            elif isinstance(survivor, dict) and survivor.get("path"):
-                recently_applied.add((project, survivor["path"]))
     return recently_applied
 
 
@@ -755,6 +783,41 @@ def recently_applied_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
 # imported) because apply.py already imports this module (`from memory_dream
 # import audit as AUDIT`); importing apply.py back would be circular.
 REJECTIONS_FILENAME = "rejections.json"
+
+
+def _decision_timestamp(value: Any) -> dt.datetime | None:
+    """A comparable ledger timestamp, or no evidence of decision ordering.
+
+    Producers record timezone-aware ISO timestamps. Do not guess a timezone
+    for malformed/legacy naive values when deciding to silence a rejection.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else None
+
+
+def _latest_supersessions(payload: dict[str, Any]) -> dict[tuple[str, str], dt.datetime]:
+    latest: dict[tuple[str, str], dt.datetime] = {}
+    entries = payload.get("supersessions")
+    if not isinstance(entries, list):
+        return latest
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        stamp = _decision_timestamp(entry.get("recorded_at"))
+        project, paths = entry.get("project"), entry.get("paths")
+        if stamp is None or not isinstance(project, str) or not isinstance(paths, list):
+            continue
+        for path in paths:
+            if isinstance(path, str):
+                key = (project, path)
+                if key not in latest or stamp > latest[key]:
+                    latest[key] = stamp
+    return latest
 
 
 def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
@@ -774,7 +837,9 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     Unlike recently_applied_paths (patch-set-manifest mtime windowing),
     rejections.json is append-only and every entry carries its own
     ``recorded_at`` ISO timestamp, so windowing here is per-entry rather than
-    per-file.
+    per-file. Successful applications recorded in ``supersessions`` invalidate
+    only earlier rejections for the same (project, path). These durable
+    records do not expire with the independent applied-suppression window.
     """
     recently_rejected: set[tuple[str, str]] = set()
     path = config.pass_root() / REJECTIONS_FILENAME
@@ -787,6 +852,7 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
     entries = payload.get("entries") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
         return recently_rejected
+    supersessions = _latest_supersessions(payload)
     cutoff = dt.date.fromordinal(now.toordinal() - days)
     for entry in entries:
         if not isinstance(entry, dict):
@@ -803,9 +869,14 @@ def recently_rejected_paths(days: int, now: dt.date) -> set[tuple[str, str]]:
         project = entry.get("project")
         if not isinstance(project, str):
             continue
+        rejected_at = _decision_timestamp(recorded_at)
         for path_value in entry.get("paths") or []:
             if isinstance(path_value, str):
-                recently_rejected.add((project, path_value))
+                key = (project, path_value)
+                applied_at = supersessions.get(key)
+                if rejected_at is not None and applied_at is not None and applied_at > rejected_at:
+                    continue
+                recently_rejected.add(key)
     return recently_rejected
 
 
@@ -906,7 +977,22 @@ def update_deferral_streaks() -> list[dict[str, Any]]:
     count incremented (or starts at 1); any key that was tracked but is
     absent from the newest pass resets -- its record is dropped, matching
     "consecutive passes deferred" semantics.
+
+    The sibling lock covers both reads and the atomic replacement. On
+    contention or lock setup failure, return saved streaks without writing;
+    a later triage/doctor run can advance the pending newest pass.
     """
+    root = config.pass_root()
+    try:
+        with compat.FileLock(root / (DEFERRAL_STREAKS_FILENAME + ".lock")):
+            return _update_deferral_streaks_locked()
+    except (compat.LockHeld, OSError) as error:
+        print(f"memory-dream triage: WARNING could not update {DEFERRAL_STREAKS_FILENAME}: {error}", file=sys.stderr)
+        return _load_deferral_streaks()["streaks"]
+
+
+def _update_deferral_streaks_locked() -> list[dict[str, Any]]:
+    """Read, advance and persist streaks while the caller holds their lock."""
     data = _load_deferral_streaks()
     newest = _newest_pass_report(config.pass_root())
     if newest is None:
@@ -1352,6 +1438,30 @@ def preserve_metadata(
     for key, value in (extra_nested or {}).items():
         _set_or_insert_nested(lines, key, value)
     return "".join(lines) + drafter_body
+
+
+def strip_note_identity(content: str) -> str:
+    """Omit originSessionId/modified on a NEW note, preserving all other bytes.
+
+    Accept the same flat and nested metadata layouts as parse_frontmatter.
+    Do not touch the body or identically named fields in other schema blocks.
+    Call after metadata preservation so its donor/fallback cannot restore them.
+    """
+    frontmatter, body = split_frontmatter_raw(content)
+    if not frontmatter:
+        return content
+    kept = []
+    in_metadata = False
+    for line in frontmatter.splitlines(keepends=True):
+        match = re.match(r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_.-]+)\s*:", line)
+        if match:
+            indent, key = match.group("indent"), match.group("key")
+            if not indent:
+                in_metadata = key == "metadata"
+            if key in ("originSessionId", "modified") and (not indent or in_metadata):
+                continue
+        kept.append(line)
+    return "".join(kept) + body
 
 
 def content_tokens(value: str) -> set[str]:
