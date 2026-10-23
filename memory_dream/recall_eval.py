@@ -53,6 +53,13 @@ SNIPPET_MAX_CHARS = 300
 BODY_SAMPLE_CAP = 6000  # bytes of body handed to a question writer per note
 
 
+def _write_eval_json(path: Path, payload: object) -> None:
+    """Persist an eval artifact using the established JSON byte format."""
+    AUDIT.atomic_write(
+        path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    )
+
+
 def normalize(text: str) -> str:
     """Whitespace-collapsed, case-folded form used for all snippet matching."""
     return " ".join(text.split()).casefold()
@@ -271,9 +278,7 @@ def run_freeze(args: argparse.Namespace) -> int:
     }
     out = Path(args.out).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
-    AUDIT.atomic_write(
-        out, (json.dumps(suite, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    )
+    _write_eval_json(out, suite)
     print(
         f"memory-dream eval freeze: froze {len(questions)} question(s) "
         f"({len(dropped)} dropped), suite {suite['suite_id']} -> {out}"
@@ -652,10 +657,7 @@ def run_score(args: argparse.Namespace) -> int:
 
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
-    AUDIT.atomic_write(
-        out_dir / f"run-{args.run_id}.json",
-        (json.dumps(run, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-    )
+    _write_eval_json(out_dir / f"run-{args.run_id}.json", run)
 
     lines = [
         f"memory-dream eval score: suite {run['suite_id']} run {args.run_id}: "
@@ -830,10 +832,7 @@ def run_export_paired(args: argparse.Namespace) -> int:
         ("paired-baseline.json", base_scores),
         ("paired-candidate.json", cand_scores),
     ):
-        AUDIT.atomic_write(
-            out_dir / name,
-            (json.dumps(scores, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-        )
+        _write_eval_json(out_dir / name, scores)
     print(
         f"export-paired: {len(base_scores)} pairs -> {out_dir} "
         f"({decayed} decayed excluded, {baseline_only} baseline-only, "

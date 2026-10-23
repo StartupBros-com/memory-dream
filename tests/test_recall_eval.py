@@ -8,6 +8,8 @@ each test gets its own clean CLAUDE_CONFIG_DIR (never a developer's real
 override from the outer environment -- same discipline as test_apply.py.
 """
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -15,6 +17,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from memory_dream import recall_eval as RE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -749,6 +754,82 @@ class SampleTests(unittest.TestCase):
             self.assertIn("2 note(s) from 1 project(s)", result.stderr)
             self.assertIn("(--min-bytes 100, --per-project 2)", result.stderr)
             self.assertIn("1 sensitive", result.stderr)
+
+
+
+class EvalArtifactWriteTests(unittest.TestCase):
+    def test_exact_bytes_and_nonmutation(self):
+        payload = {"z": [None, True, False, 1, 1.5, "é😀\n\"\\"], "a": {"z": [], "a": {}}}
+        expected = (
+            b'{\n  "a": {\n    "a": {},\n    "z": []\n  },\n  "z": [\n'
+            b'    null,\n    true,\n    false,\n    1,\n    1.5,\n'
+            b'    "\\u00e9\\ud83d\\ude00\\n\\\"\\\\"\n  ]\n}\n'
+        )
+        before = json.dumps(payload)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "spaced artifact.json"
+            path.write_bytes(b"old destination")
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                RE._write_eval_json(path, payload)
+            self.assertEqual(path.read_bytes(), expected)
+            self.assertFalse(path.with_name(path.name + ".dream-tmp").exists())
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(json.dumps(payload), before)
+
+    def test_serialization_and_write_errors_preserved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "artifact.json"
+            path.write_bytes(b"unchanged")
+            with mock.patch.object(RE.AUDIT, "atomic_write") as write:
+                with self.assertRaises(TypeError):
+                    RE._write_eval_json(path, {"unsupported": object()})
+                write.assert_not_called()
+            self.assertEqual(path.read_bytes(), b"unchanged")
+            error = OSError("synthetic write failure")
+            with mock.patch.object(RE.AUDIT, "atomic_write", side_effect=error) as write:
+                with self.assertRaises(OSError) as raised:
+                    RE._write_eval_json(path, {})
+                self.assertIs(raised.exception, error)
+                write.assert_called_once_with(path, b"{}\n")
+            self.assertEqual(path.read_bytes(), b"unchanged")
+            missing = Path(temp) / "missing" / "artifact.json"
+            with self.assertRaises(FileNotFoundError):
+                RE._write_eval_json(missing, {})
+            self.assertFalse(missing.parent.exists())
+
+    def test_default_numeric_policy_and_atomic_arguments(self):
+        path = Path("artifact.json")
+        payload = {"z": float("inf"), "a": float("nan"), "n": float("-inf")}
+        with mock.patch.object(RE.AUDIT, "atomic_write") as write:
+            self.assertIsNone(RE._write_eval_json(path, payload))
+            write.assert_called_once_with(path, b'{\n  "a": NaN,\n  "n": -Infinity,\n  "z": Infinity\n}\n')
+
+    def test_all_cli_artifacts_keep_exact_json_format(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Fixture(Path(temp))
+            memory = fixture.project()
+            (memory / "a.md").write_text(note("a", body=BODY), encoding="utf-8")
+            (memory / "MEMORY.md").write_text("- [a](a.md)\n", encoding="utf-8")
+            result, suite_path = fixture.freeze([fixture.question(question="How is é😀 picked?")])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            suite = json.loads(suite_path.read_bytes())
+            qid = suite["questions"][0]["id"]
+            result = fixture.score([{"id": qid, "routed": ["a.md"], "abstained": False}], "baseline")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(fixture.run_file("baseline")["accuracy"], 100.0)
+            run_path = fixture.root / "runs" / "run-baseline.json"
+            out = fixture.root / "nested output" / "paired"
+            result = fixture.run("export-paired", "--baseline", str(run_path),
+                                 "--candidate", str(run_path), "--out-dir", str(out))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for path in (suite_path, run_path, out / "paired-baseline.json", out / "paired-candidate.json"):
+                with self.subTest(path=path.name):
+                    raw = path.read_bytes()
+                    self.assertEqual(raw, (json.dumps(json.loads(raw), indent=2, sort_keys=True) + "\n").encode("utf-8"))
+                    self.assertFalse(path.with_name(path.name + ".dream-tmp").exists())
+            self.assertIn(b"\\u00e9\\ud83d\\ude00", suite_path.read_bytes())
 
 
 if __name__ == "__main__":
