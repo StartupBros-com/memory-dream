@@ -31,6 +31,7 @@ from typing import Any
 
 from memory_dream import audit as AUDIT
 from memory_dream import compat, config
+from memory_dream.archive import ARCHIVE_POINTER, parse_index_entries, archived_index
 
 ACTIONS = {"period-close", "merge", "compress", "split", "redescribe", "leave"}
 
@@ -990,11 +991,12 @@ def run_build(args: argparse.Namespace) -> int:
         if isinstance(cluster, dict) and cluster.get("cluster_id")
     }
     live_for_drift = AUDIT.project_dirs(live_root, live=True)
+    missing_plan_clusters: set[str] = set()
     drifted_clusters: set[str] = set()
     for cid in drafts:
         cluster = plan_clusters_by_id.get(cid)
         if cluster is None:
-            drifted_clusters.add(cid)
+            missing_plan_clusters.add(cid)
             continue
         memory_dir = live_for_drift.get(cluster.get("project"))
         if memory_dir is None:
@@ -1012,14 +1014,24 @@ def run_build(args: argparse.Namespace) -> int:
             if _note_body_digest(live_body) != planned_digest:
                 drifted_clusters.add(cid)
                 break
+    if missing_plan_clusters:
+        print(
+            f"memory-dream: drafted cluster(s) not in plan {args.plan}: "
+            f"{', '.join(sorted(missing_plan_clusters))}; "
+            "drafts and plan come from different plan runs; select the matching --plan file",
+            file=sys.stderr,
+        )
     if drifted_clusters:
         print(
             "memory-dream: source notes changed since plan; re-run "
             f"plan+verification (cluster(s): {', '.join(sorted(drifted_clusters))})",
             file=sys.stderr,
         )
+    if missing_plan_clusters or drifted_clusters:
         return 2
-    proposals, dropped = assemble_proposals(plan.get("clusters", []), drafts, live_root, str(args.stamp))
+    proposals, dropped = assemble_proposals(
+        plan.get("clusters", []), drafts, live_root, str(args.stamp)
+    )
 
     out = Path(args.out).expanduser() if args.out else _fresh_pass_dir()
     out.mkdir(parents=True, exist_ok=True)
@@ -1218,28 +1230,6 @@ def run_build(args: argparse.Namespace) -> int:
 
 # --- Archive tier (deterministic, index-only) --------------------------------
 
-ARCHIVE_POINTER = "- Older or resolved entries are archived in MEMORY-archive.md (not auto-loaded); grep it when a topic is missing here."
-
-
-def parse_index_entries(index_text: str) -> list[list[str]]:
-    """Split MEMORY.md into entry blocks: a '- [' line plus its continuation lines."""
-    blocks: list[list[str]] = []
-    current: list[str] | None = None
-    for line in index_text.splitlines():
-        if line.lstrip().startswith("- ["):
-            if current:
-                blocks.append(current)
-            current = [line]
-        elif current is not None and line.strip() and not line.startswith("#"):
-            current.append(line)
-        else:
-            if current:
-                blocks.append(current)
-                current = None
-    if current:
-        blocks.append(current)
-    return blocks
-
 
 def entry_latest_date(block: list[str], memory_dir: Path) -> str | None:
     """Latest YYYY-MM-DD date in the entry text plus the head of its note body."""
@@ -1319,10 +1309,7 @@ def run_archive(args: argparse.Namespace) -> int:
         "proposals": [proposal],
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-    remaining = [ln for ln in index_text.splitlines() if all(ln not in t.splitlines() for t in entry_texts)]
-    new_index = "\n".join(remaining).rstrip() + "\n"
-    if ARCHIVE_POINTER not in new_index:
-        new_index += ARCHIVE_POINTER + "\n"
+    new_index = archived_index(index_text, entry_texts)
     diff_text = "".join(
         difflib.unified_diff(
             index_text.splitlines(keepends=True), new_index.splitlines(keepends=True),
