@@ -1085,6 +1085,70 @@ class HardeningTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((root / "out" / "manifest.json").exists())
 
+    def test_build_reports_drafted_cluster_missing_from_selected_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live_root, cluster = self._compress_setup(root, note("a", body="Fact."))
+            write_findings(root)
+            selected_plan = root / "other plan.json"
+            selected_plan.write_text(
+                json.dumps({"clusters": []}), encoding="utf-8", newline="\n"
+            )
+            out = root / "out"
+            result = self._build_cli(
+                root, live_root, out, extra=("--plan", str(selected_plan))
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(
+                f"drafted cluster(s) not in plan {selected_plan}: {cluster['cluster_id']}",
+                result.stderr,
+            )
+            self.assertIn(
+                "drafts and plan come from different plan runs", result.stderr
+            )
+            self.assertNotIn("source notes changed since plan", result.stderr)
+            self.assertFalse(out.exists())
+            self.assertFalse((out / "manifest.json").exists())
+
+    def test_build_reports_missing_plan_clusters_and_source_drift_separately(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            live_root, cluster = self._compress_setup(root, note("a", body="Fact."))
+            drafts_path = root / "drafts.json"
+            drafts = json.loads(drafts_path.read_text(encoding="utf-8"))
+            original = drafts["clusters"][0]
+            drafts["clusters"] = [
+                {**original, "cluster_id": "missing-z"},
+                original,
+                {**original, "cluster_id": "missing-a"},
+            ]
+            (live_root / "proj" / "memory" / "a.md").write_text(
+                note("a", body="Changed after plan."), encoding="utf-8", newline="\n"
+            )
+            for entries in (drafts["clusters"], list(reversed(drafts["clusters"]))):
+                with self.subTest(order=[entry["cluster_id"] for entry in entries]):
+                    drafts_path.write_text(
+                        json.dumps({"clusters": entries}),
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    write_findings(root)
+                    out = root / "out"
+                    result = self._build_cli(root, live_root, out)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(
+                        result.stderr.splitlines(),
+                        [
+                            f"memory-dream: drafted cluster(s) not in plan {root / 'plan.json'}: "
+                            "missing-a, missing-z; drafts and plan come from different plan runs; "
+                            "select the matching --plan file",
+                            "memory-dream: source notes changed since plan; re-run "
+                            f"plan+verification (cluster(s): {cluster['cluster_id']})",
+                        ],
+                    )
+                    self.assertFalse(out.exists())
+                    self.assertFalse((out / "manifest.json").exists())
+
     def test_build_refuses_when_source_note_changed_since_plan(self):
         # The findings gate above only binds the drafted PROPOSALS
         # (drafts_digest), not the source bytes those proposals were drafted
