@@ -1354,6 +1354,30 @@ def preserve_metadata(
     return "".join(lines) + drafter_body
 
 
+def strip_note_identity(content: str) -> str:
+    """Omit originSessionId/modified on a NEW note, preserving all other bytes.
+
+    Accept the same flat and nested metadata layouts as parse_frontmatter.
+    Do not touch the body or identically named fields in other schema blocks.
+    Call after metadata preservation so its donor/fallback cannot restore them.
+    """
+    frontmatter, body = split_frontmatter_raw(content)
+    if not frontmatter:
+        return content
+    kept = []
+    in_metadata = False
+    for line in frontmatter.splitlines(keepends=True):
+        match = re.match(r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_.-]+)\s*:", line)
+        if match:
+            indent, key = match.group("indent"), match.group("key")
+            if not indent:
+                in_metadata = key == "metadata"
+            if key in ("originSessionId", "modified") and (not indent or in_metadata):
+                continue
+        kept.append(line)
+    return "".join(kept) + body
+
+
 def content_tokens(value: str) -> set[str]:
     """Content-word token set for description-similarity checks (recall is routed
     by these one-liners, so two near-identical descriptions cannot be told apart).
