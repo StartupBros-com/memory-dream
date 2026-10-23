@@ -1199,6 +1199,25 @@ def run_build(args: argparse.Namespace) -> int:
     for proposal in proposals:
         for result in proposal.get("results", []):
             (results_dir / f"{proposal['project']}__{result['path']}").write_text(result["content"], encoding="utf-8", newline="\n")
+    # Formatting evidence is advisory and body-free. Rendering uses the same
+    # detector, but does not change any pre-existing custom index line.
+    index_format_drift = []
+    for project in sorted({proposal["project"] for proposal in proposals}):
+        memory_dir = live.get(project)
+        if memory_dir is None:
+            continue
+        index_file = memory_dir / "MEMORY.md"
+        if not index_file.is_file() or index_file.is_symlink():
+            continue
+        style = AUDIT.detect_index_format(index_file.read_text(encoding="utf-8", errors="replace"))
+        if style["mixed"]:
+            index_format_drift.append({"project": project, **style})
+            print(
+                f"memory-dream: WARN index format drift for {project}: "
+                f"{style['recognized']} recognized, {style['unrecognized']} unsupported entries; "
+                f"append format {style['format'] or 'canonical fallback'}",
+                file=sys.stderr,
+            )
     # Filename-casing drift lint (measured 2026-07-31 during the authors'
     # consolidation campaign: drafters silently renamed kebab-case survivors to
     # snake_case, mixing conventions inside one project store). Flag NEW
@@ -1290,6 +1309,7 @@ def run_build(args: argparse.Namespace) -> int:
     report = {
         "schema_version": 1,
         "proposals": len(proposals),
+        "index_format_drift": index_format_drift,
         "dropped": dropped,
         "deferred": plan.get("deferred", []),
         "manual_review": plan.get("manual_review", []),
