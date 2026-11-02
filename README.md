@@ -1,115 +1,17 @@
-# memory-dream
+**memory-dream now lives at [`plugins/memory-dream/` in StartupBros-com/hov-stack](https://github.com/StartupBros-com/hov-stack/tree/main/plugins/memory-dream).**
 
-[![CI](https://github.com/StartupBros-com/memory-dream/actions/workflows/test.yml/badge.svg)](https://github.com/StartupBros-com/memory-dream/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+This repository is archived. It keeps the history and releases up to v0.4.0.
+Releases from v0.4.1 on, issues and pull requests are in
+[StartupBros-com/hov-stack](https://github.com/StartupBros-com/hov-stack). Its open issues moved there with the `plugin:memory-dream` label.
 
-**The sleep cycle for Claude Code auto-memory.** Your agent writes notes every session and never cleans them up. memory-dream is the consolidation pass that was missing: it finds the rot deterministically, drafts fixes with a subagent that cannot touch your files, shows you a diff for every single change, and applies only what you approve. Then it measures whether recall actually got better.
+## Install
 
-Plenty of tooling captures memories. Nothing consolidates them. That is the gap this fills.
-
-## The problem
-
-Auto-memory grows monotonically. Notes supersede each other and both survive. Descriptions go stale and route future sessions to wrong answers. Long logs bury the one durable lesson. And the per-project index has a hard load cap: once `MEMORY.md` outgrows what Claude Code actually loads, your newest notes silently stop routing at all.
-
-Deleting by hand is worse. Recall is agentic and invisible: you cannot see which note answered a question, so you cannot see what a deletion broke. Consolidation without measurement is guessing.
-
-## What it does
-
-One pass, operator-gated end to end:
-
-1. **Triage** scores every note on structural rot: supersession markers, oversized bodies, decayed confidence. Deterministic, read-only, no model calls.
-2. **Plan** clusters the flagged notes per project. Deterministic.
-3. **Draft** hands each cluster to a **subagent with an explicit minimal tool list**: note bodies inline, one JSON object out. Both agents declare `Glob` only (unused by their prompts); an empty list would grant every inherited tool. They can list paths but cannot read bodies, write files, run commands, or spawn agents. `omitClaudeMd: true` keeps unrelated host instructions out, and their output is re-validated, path-confined, and operator-reviewed before it can change anything.
-4. **Verify** runs the drafted changes through fidelity verification against sources, repo grounding for task-state claims, a checker pass over the corrections themselves, and a fresh-eyes quality panel. The build refuses any cluster without a recorded, content-bound verification verdict.
-5. **Preview** builds a patch set with per-proposal diffs and an HTML review surface. You approve item by item, by token. Reject everything and nothing is written.
-6. **Apply** runs a gate stack that refuses rather than guesses: single-flight lock, consent trace, sensitive-content skip, changed-since-draft skip, destination confinement, per-project atomic writes with rollback. Every touched file is snapshotted first; `memory-dream restore` undoes an applied pass.
-7. **Measure** with the recall eval: frozen, content-anchored questions routed against the live index before and after. A consolidation that loses to the old index on its own target notes is a build defect, and the pipeline treats it as one.
-
-**Proposal-only is a hard rule, not a mode.** No semantic change applies without your approval. The tool never merges, closes, or compresses a note on its own.
-
-## Using it
-
-**As a Claude Code plugin** (depends on the external marketplace repo):
+From the [House of Vibe marketplace](https://github.com/StartupBros-com/hov-stack):
 
 ```
-/plugin marketplace add StartupBros-com/hov-marketplace
+/plugin marketplace add StartupBros-com/hov-stack
 /plugin install memory-dream@hov
 ```
 
-Then, in any project:
-
-```
-/memory-dream:dream        # run a consolidation pass (operator-invoked only)
-/memory-dream:eval         # freeze a recall suite, score routing accuracy
-```
-
-**As a standalone CLI** — self-contained, works from a clone of this repo alone. It is stdlib-only Python, zero dependencies. Either drive it in place from the checkout:
-
-```
-python3 -m memory_dream doctor     # preflight: what works on this machine
-python3 -m memory_dream triage     # what would a pass even do here?
-```
-
-or install it onto `PATH` (`pyproject.toml` declares the `memory-dream` console script):
-
-```
-git clone <this repo> && cd memory-dream
-pipx install .    # or: pip install .
-memory-dream doctor
-```
-
-Start with `doctor`. It tells you which mode you are in (snapshot vs mirror), whether the consent trace can see your transcripts, and which caps apply.
-
-### Mirror mode and a custom preview opener
-
-For a harness that keeps a git-backed mirror and provides its own browser
-opener, create `~/.claude/memory-dream.json` (or
-`$CLAUDE_CONFIG_DIR/memory-dream.json` when configured). This is a worked
-example; replace the paths and command with your own:
-
-```json
-{
-  "mirror_root": "~/memory-mirror",
-  "mirror_push_hint": "~/bin/sync-memory-mirror",
-  "preview_opener": "firefox --new-window"
-}
-```
-
-`project_dirs(live=False)` expects `<mirror_root>/<project-dir>/MEMORY.md`
-and note files beside it, with **no `memory/` subdirectory**. Live memory
-instead lives under `<config-dir>/projects/<project-dir>/memory/`. Keep the
-same project-directory names on both sides. `mirror_push_hint` supplies the
-remediation text when the mirror is stale; memory-dream does not run it.
-Unknown JSON keys are a **hard error** at startup.
-
-`preview_opener` runs without a shell, with the original `preview.html` path
-appended as its final argument, and returns the command's exit code. It
-bypasses every built-in opener, including the WSL copy into the Windows
-profile that would otherwise duplicate full memory bodies. Set
-`MEMORY_DREAM_PREVIEW_OPENER` to override the config value; omit the setting
-to retain platform defaults. See [docs/TUNING.md](docs/TUNING.md) for details.
-
-## What makes it trustworthy
-
-- **Untrusted input cannot write.** Note bodies are data, never instructions. The drafting agent has no mutating tools, and four independent layers re-check its output: schema validation, path confinement, sensitive-content scan, and your own item-by-item review.
-- **Consent is verified, not assumed.** Apply checks the session transcript for a real, post-preview human turn carrying the patch set's approval token. A pipeline that drafts and applies in one automated sequence cannot approve itself.
-- **Everything is recoverable.** Apply snapshots every file it touches into the patch set before writing. Optional mirror mode adds git-history recoverability on top.
-- **It measures.** The recall eval exists because two of the pipeline's worst defect classes (an accurate description that under-covers its body, a filename that keeps routing to a deleted claim) pass every static check and only show up as lost routes.
-
-Every gate exists because a real defect got through without it. This pipeline ran 12+ supervised passes over the authors' own multi-project corpus before extraction; the defect classes each stage caught are documented in [docs/PROVENANCE.md](docs/PROVENANCE.md).
-
-## Honest limits
-
-- The trust model is a single-operator machine. The consent trace is defense in depth against accidental auto-apply, not cryptographic proof against a compromised orchestrator. Read [SECURITY.md](SECURITY.md) before installing on anything shared.
-- The index load cap (200 lines / 25 KiB) was measured against the Claude Code version recorded in `config.COMPATIBILITY_RECORD` and is not a documented API. `doctor` compares your installed CLI version against that record; [docs/TUNING.md](docs/TUNING.md) covers re-measuring it.
-- Thresholds were calibrated on one ~500-note English corpus. They are defaults, not truths, and every one is configurable.
-
-## Docs
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the three layers and the apply gate stack, gate by gate.
-- [docs/TUNING.md](docs/TUNING.md): every threshold, its provenance, and its failure symptoms.
-- [docs/PROVENANCE.md](docs/PROVENANCE.md): the hardening campaign that shaped the pipeline.
-- [SECURITY.md](SECURITY.md): trust model, consent modes, what is and is not defended.
-
-## Attribution
-
-Built by [StartupBros / House of Vibe](https://houseofvibe.ai). MIT license.
+An existing install from the marketplace picks up the new home on its next
+plugin update. There is nothing to reinstall.
